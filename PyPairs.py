@@ -1,7 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import atpy
-
+import astropy.unit as u
+from astropy.coordinates import SkyCoord
 
 class Pairs(object):
     """ Main class for photometric pair-count analysis
@@ -51,6 +52,32 @@ class Pairs(object):
         self.IDs = self.phot_catalog[idcol]
         self.RA = self.phot_catalog[racol]
         self.Dec = self.phot_catalog[deccol]
+        self.coords = SkyCoord(self.RA,self.Dec,frame='icrs')
+        
+    def initialSample(self,intitial):
+        """ Define and set up initial sample of galaxies in which to find pairs
+        
+        Initial sample definition is done OUTSIDE of class and then loaded to allow
+        for different sample definition criteria for respective papers. Alleviate need
+        for multiple different functions.
+        
+        Args:
+            initial (1d array): Indexes of galaxies which satisfy the initial sample
+                criteria.
+        
+        """
+        self.initial  = initial
+        
+        
+    def findPairs(self,sep):
+        """ 
+        
+        
+        """
+        for gal in self.coords[self.initial]:
+        idxc, idxcatalog, d2d, d3d = self.coords.search_around_sky(gal, sep*u.deg)
+    
+        self.initial_pairs = []
         
     def plotPz(self,galaxy_indices,legend=True,draw_frame=False):
         """ Plot the redshift likelihood distribution for a set of galaxies in sample.
