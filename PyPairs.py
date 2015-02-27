@@ -69,15 +69,30 @@ class Pairs(object):
         self.initial  = initial
         
         
-    def findPairs(self,sep):
+    def findPairs(self,maxsep,minsep=0,units=u.arcsecond):
         """ 
-        
-        
+        Docs
         """
-        for gal in self.coords[self.initial]:
-        idxc, idxcatalog, d2d, d3d = self.coords.search_around_sky(gal, sep*u.deg)
-    
+        
         self.initial_pairs = []
+        
+        
+        for i, gal in enumerate(self.coords[self.initial]):
+            d2d = gal.separation(self.coords)
+            catalogmsk = (minsep*units < d2d)*(d2d < maxsep*units)
+            idxcatalog = np.where(catalogmsk)[0]
+            self.initial_pairs.append(idxcatalog)
+
+    def findPairs2(self,maxsep,units=u.arcsecond):
+        """ 
+        Docs
+        """
+        sample_tree = cKDTree( zip(self.RA.value[self.initial], self.Dec.value[self.initial]) )
+        
+        self.full_tree = cKDTree(zip(self.RA.value, self.Dec.value)) # Might be worth keeping, maybe not
+        
+        self.initial_pairs = sample_tree.query_ball_tree(self.full_tree, (maxsep*units).to('degree').value)
+        # Individual sets of matches need sorting before comparing to findPairs brute force
         
     def plotPz(self,galaxy_indices,legend=True,draw_frame=False):
         """ Plot the redshift likelihood distribution for a set of galaxies in sample.
