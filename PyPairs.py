@@ -1,4 +1,4 @@
-import matplotlib.pyplot as plt, numpy as np
+import matplotlib.pyplot as plt, numpy as np, time
 import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.table import Table
@@ -14,7 +14,7 @@ class Pairs(object):
         
     """
     
-    def __init__(self, z, redshift_cube, mass_cube, photometry, catalog_format = 'fits',
+    def __init__(self, z, redshift_cube, mass_cube, photometry=False, catalog_format = 'fits',
                  idcol = 'ID', racol = 'RA', deccol = 'DEC', H0 = 70., OM = 0.3):
         """ Load and format appropriately the necessary data for pair-count calculations
         
@@ -60,8 +60,8 @@ class Pairs(object):
             print "Cannot read photometry catalogue - please check"
         # Class ID, position and co-ordinate arrays
         self.IDs = self.phot_catalog[idcol]
-        self.RA = self.phot_catalog[racol]
-        self.Dec = self.phot_catalog[deccol]
+        self.RA = self.phot_catalog[racol] * u.deg
+        self.Dec = self.phot_catalog[deccol] * u.deg
         self.coords = SkyCoord(self.RA,self.Dec,frame='icrs')
         # Set up a cosmology for the class to use
         self.cosmo = FlatLambdaCDM(H0=H0, Om0=OM)
@@ -79,7 +79,7 @@ class Pairs(object):
         self.r_min = r_min.to(u.kpc)
         self.r_max = r_max.to(u.kpc)
         
-    def initialSample(self,intitial):
+    def initialSample(self,initial):
         """ Define and set up initial sample of galaxies in which to find pairs
         
         Initial sample definition is done OUTSIDE of class and then loaded to allow
@@ -91,23 +91,9 @@ class Pairs(object):
                 criteria.
         
         """
-        self.initial  = initial
+        self.initial = initial
         
-    def findPairs(self,maxsep,minsep=0,units=u.arcsecond):
-        """ 
-        Docs
-        """
-        
-        self.initial_pairs = []
-        
-        
-        for i, gal in enumerate(self.coords[self.initial]):
-            d2d = gal.separation(self.coords)
-            catalogmsk = (minsep*units < d2d)*(d2d < maxsep*units)
-            idxcatalog = np.where(catalogmsk)[0]
-            self.initial_pairs.append(idxcatalog)
-
-    def findPairs2(self,maxsep,units=u.arcsecond):
+    def findPairs(self,maxsep,units=u.arcsecond):
         """ 
         Docs
         """
@@ -117,6 +103,25 @@ class Pairs(object):
         
         self.initial_pairs = sample_tree.query_ball_tree(self.full_tree, (maxsep*units).to('degree').value)
         # Individual sets of matches need sorting before comparing to findPairs brute force
+
+        print self.initial_pairs
+
+    def findPairsAP(self, maxsep):
+
+        maxsep = maxsep*u.arcsecond
+        maxsep = maxsep.to(u.deg)
+
+        primary_cat = SkyCoord( ra=self.RA[self.initial], dec=self.Dec[self.initial])
+
+        seps = []
+        for gal in primary_cat:
+            tmpseps = self.coords.separation( gal )
+            seps.append( np.where((tmpseps < maxsep))[0] )
+
+
+        print seps
+
+
 
     def redshiftProb(self,p1x,p2x):
         """ Generate the redshift probability function, Z(z), for two galaxies
@@ -156,9 +161,20 @@ class Pairs(object):
         cmz, pmz = self.mz[cidx,:], self.mz[pidx,:]
 
 
+    def plotSample(self,galaxy_indices,legend=True,draw_frame=False):
 
+        Fig = plt.figure(figsize=(6,6.5))
+        Ax = Fig.add_subplot(111)
 
+        for gal in np.array(galaxy_indices,ndmin=1):
+            Ax.plot( self.RA[gal], self.Dec[gal], 'ow', mec='r', mew=2, ms=10)
 
+        Ax.plot( self.RA, self.Dec, 'ok', ms=5)
+
+        Ax.set_ylabel('Dec')
+        Ax.set_xlabel('RA')
+        Fig.subplots_adjust(right=0.95,top=0.95,bottom=0.14)
+        plt.show()
 
         
     def plotPz(self,galaxy_indices,legend=True,draw_frame=False):
@@ -186,7 +202,7 @@ class Pairs(object):
         
         Ax.set_xlabel('Redshift, z')
         Ax.set_ylabel(r'$P(z)$')
-        Fig.subplots_adjust(right=0.95,top=0.95,bottom=0.14)
+        plt.tight_layout()
         plt.show()
     
     def plotMz(self,galaxy_indices,legend=True,draw_frame=False):
