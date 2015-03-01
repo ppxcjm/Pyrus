@@ -1,8 +1,9 @@
-import matplotlib.pyplot as plt
-import numpy as np
-import atpy
-import astropy.unit as u
+import matplotlib.pyplot as plt, numpy as np
+import astropy.units as u
 from astropy.coordinates import SkyCoord
+from astropy.table import Table
+from astropy.cosmology import FlatLambdaCDM
+from scipy.spatial import cKDTree
 
 class Pairs(object):
     """ Main class for photometric pair-count analysis
@@ -14,7 +15,7 @@ class Pairs(object):
     """
     
     def __init__(self, z, redshift_cube, mass_cube, photometry, catalog_format = 'fits',
-                 idcol = 'ID', racol = 'RA', deccol = 'DEC'):
+                 idcol = 'ID', racol = 'RA', deccol = 'DEC', H0 = 70., OM = 0.3):
         """ Load and format appropriately the necessary data for pair-count calculations
         
         Args:
@@ -28,31 +29,55 @@ class Pairs(object):
             idcol (str): Column name for galaxy IDs
             racol (str): Column name for galaxy RAs
             deccol (str): Column name for galaxy DECs
+            H0 (float): Hubble constant in km/Mpc/s.
+            OM (float): Dark matter density in units of critical density.
         
         Returns:
             Public attributes created and appropriately formatted for later 
                 use and access
         
         """
-                 
+        # Cube containing the P(z) for each galaxy
         redshift_cube = np.array(redshift_cube)
+        # Cube containing the M*(z) for each galaxy
         mass_cube = np.array(mass_cube)
+        # Check for shape mismatch
         if redshift_cube.shape != mass_cube.shape:
             print "Redshift and Mass data-cube shapes do not match - please check"
         else:
             self.pz = redshift_cube
             self.mz = mass_cube
-        
+        # Set the redshift range array
         self.zr = z
-        self.peakz = np.array([self.zr[gal] for gal in np.argmax(self.pz,axis=1)])
-        
-
+        # Get the most probable redshift solution
+        self.peakz = np.array([self.zr[galx] for galx in np.argmax(self.pz,axis=1)])
+        # Class photometry path
         self.photometry_path = photometry
-        self.phot_catalog = atpy.Table(self.photometry_path,type='fits')
+        # Attempt to read the catalogue
+        try:
+            self.phot_catalog = Table.read(self.photometry_path)
+        except:
+            print "Cannot read photometry catalogue - please check"
+        # Class ID, position and co-ordinate arrays
         self.IDs = self.phot_catalog[idcol]
         self.RA = self.phot_catalog[racol]
         self.Dec = self.phot_catalog[deccol]
         self.coords = SkyCoord(self.RA,self.Dec,frame='icrs')
+        # Set up a cosmology for the class to use
+        self.cosmo = FlatLambdaCDM(H0=H0, Om0=OM)
+
+    def defineSeparation(self, r_min, r_max):
+        """ Define the physical radius conditions of the class. Designed this way so 
+                can change this on the fly if need be.
+
+        Args:
+            r_min (astropy.unit float): Minimum physical radius for close pairs.
+            r_max (astropy.unit float): Maximum physical radius for close pairs.
+
+        """
+        # Set the class properties
+        self.r_min = r_min.to(u.kpc)
+        self.r_max = r_max.to(u.kpc)
         
     def initialSample(self,intitial):
         """ Define and set up initial sample of galaxies in which to find pairs
@@ -68,16 +93,73 @@ class Pairs(object):
         """
         self.initial  = initial
         
-        
-    def findPairs(self,sep):
+    def findPairs(self,maxsep,minsep=0,units=u.arcsecond):
         """ 
-        
-        
+        Docs
         """
-        for gal in self.coords[self.initial]:
-        idxc, idxcatalog, d2d, d3d = self.coords.search_around_sky(gal, sep*u.deg)
-    
+        
         self.initial_pairs = []
+        
+        
+        for i, gal in enumerate(self.coords[self.initial]):
+            d2d = gal.separation(self.coords)
+            catalogmsk = (minsep*units < d2d)*(d2d < maxsep*units)
+            idxcatalog = np.where(catalogmsk)[0]
+            self.initial_pairs.append(idxcatalog)
+
+    def findPairs2(self,maxsep,units=u.arcsecond):
+        """ 
+        Docs
+        """
+        sample_tree = cKDTree( zip(self.RA.value[self.initial], self.Dec.value[self.initial]) )
+        
+        self.full_tree = cKDTree(zip(self.RA.value, self.Dec.value)) # Might be worth keeping, maybe not
+        
+        self.initial_pairs = sample_tree.query_ball_tree(self.full_tree, (maxsep*units).to('degree').value)
+        # Individual sets of matches need sorting before comparing to findPairs brute force
+
+    def redshiftProb(self,p1x,p2x):
+        """ Generate the redshift probability function, Z(z), for two galaxies
+
+        Args:
+            p1x (int): Index of the central galaxy.
+            p2x (int): Index of the companion galaxy.
+
+        """
+
+        top = self.pz[p1x,:] * self.pz[p2x,:]
+        bot = 0.5 * (self.pz[p1x,:] + self.pz[p2x,:])
+
+        return top/bot
+
+    def genAngularMask(self,thetas):
+        """
+
+        """
+        theta_minz = self.r_min / self.cosmo.angular_diameter_distance(self.zr)
+        theta_maxz = self.r_max / self.cosmo.angular_diameter_distance(self.zr)
+        thetas_cube = thetas * np.ones( (len(thetas), len(self.zr) ) )
+        angularMask = np.array( (thetas_cube <= theta_maxz) * (thetas_cube >= theta_minz) )
+        return angularMask
+
+    def genMassMask(self,cidx,pidx):
+        """ Generate the stellar mass mask that defines the merger ratio of interest.
+
+        Args:
+            cidx (int or 1-d array): Central galaxy indices.
+            pidx (int or 1-d array): Pair/companion galaxy indices.
+
+        """
+
+        if cidx.shape != pidx.shape:
+            print 'Cannot generate mass mask! Index arrays not the same shape - please check'
+        cmz, pmz = self.mz[cidx,:], self.mz[pidx,:]
+
+
+
+
+
+
         
     def plotPz(self,galaxy_indices,legend=True,draw_frame=False):
         """ Plot the redshift likelihood distribution for a set of galaxies in sample.
