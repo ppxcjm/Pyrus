@@ -1,9 +1,13 @@
+# Matplotlib, numpy
 import matplotlib.pyplot as plt, numpy as np, time
+# Astropy
 import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.table import Table
 from astropy.cosmology import FlatLambdaCDM
+# Scipy
 from scipy.spatial import cKDTree
+from scipy.integrate import simps
 
 class Pairs(object):
     """ Main class for photometric pair-count analysis
@@ -15,7 +19,7 @@ class Pairs(object):
     """
     
     def __init__(self, z, redshift_cube, mass_cube, photometry=False, catalog_format = 'fits',
-                 idcol = 'ID', racol = 'RA', deccol = 'DEC', H0 = 70., OM = 0.3):
+                 idcol = 'ID', racol = 'RA', deccol = 'DEC', cosmology = False):
         """ Load and format appropriately the necessary data for pair-count calculations
         
         Args:
@@ -51,11 +55,12 @@ class Pairs(object):
         self.zr = z
         # Get the most probable redshift solution
         self.peakz = np.array([self.zr[galx] for galx in np.argmax(self.pz,axis=1)])
+        self.peakz_arg = np.argmax(self.pz,axis=1)
         # Class photometry path
         self.photometry_path = photometry
         # Attempt to read the catalogue
         try:
-            self.phot_catalog = Table.read(self.photometry_path)
+            self.phot_catalog = Table.read( self.photometry_path )
         except:
             print "Cannot read photometry catalogue - please check"
         # Class ID, position and co-ordinate arrays
@@ -64,7 +69,10 @@ class Pairs(object):
         self.Dec = self.phot_catalog[deccol] * u.deg
         self.coords = SkyCoord(self.RA,self.Dec,frame='icrs')
         # Set up a cosmology for the class to use
-        self.cosmo = FlatLambdaCDM(H0=H0, Om0=OM)
+        if not cosmology:
+            self.cosmo = FlatLambdaCDM( H0=70, Om0=0.3 )
+        else:
+            self.cosmo = cosmology
 
     def defineSeparation(self, r_min, r_max):
         """ Define the physical radius conditions of the class. Designed this way so 
@@ -91,75 +99,107 @@ class Pairs(object):
                 criteria.
         
         """
-        self.initial = initial
+        self.initial = np.array(initial)
         
-    def findPairs(self,maxsep,units=u.arcsecond):
-        """ 
-        Docs
+    def findInitialPairs(self, z_min = 0.1):
+        """ Find an initial list of potential close pair companions based on the already
+            defined separations.
+
+            Args:
+                z_min (float): Minimum redshift being considered by the work. For calc-
+                    ulation of maximum separation.
+
         """
-        sample_tree = cKDTree( zip(self.RA.value[self.initial], self.Dec.value[self.initial]) )
-        
+
+        # Calculate the maximum separation (in degrees) on the sky
+        maxsep = (self.r_max / self.cosmo.angular_diameter_distance( z_min ).to(u.kpc) )*u.rad
+        # Set up the binary table of the initial sample's RA and D
+        primary_tree = cKDTree( zip(self.RA.value[self.initial], self.Dec.value[self.initial]) )
+        # Set up the binary table of the full catalogue's RA and Dec
         self.full_tree = cKDTree(zip(self.RA.value, self.Dec.value)) # Might be worth keeping, maybe not
-        
-        self.initial_pairs = sample_tree.query_ball_tree(self.full_tree, (maxsep*units).to('degree').value)
-        # Individual sets of matches need sorting before comparing to findPairs brute force
+        # Search for objects within maxsep separation
+        self.initial_pairs = primary_tree.query_ball_tree(self.full_tree, maxsep.to(u.deg).value)
+        # Remove self-matches
+        # Returns an array of length = len(self.initial), each element is a list of potential companion indices.
+        for p, i_idx in enumerate(self.initial):
+            self.initial_pairs[p].remove(i_idx)
+        # Now search for duplicate values
+        # ... For each galaxy in the primary sample,
+        for i, primary in enumerate(self.initial):
+            # Go through its matches...
+            for j, secondary in enumerate(self.initial_pairs[i]):
+                # If the potential companion is in the primary sample
+                if secondary in self.initial:
+                    # What are their massses at z(min(chi^2))
+                    primary_mass = self.mz[primary, self.peakz_arg[primary]]
+                    secondary_mass = self.mz[secondary, self.peakz_arg[secondary]]
+                    # Delete things
+                    if secondary_mass > primary_mass:
+                        # If the companion is more massive, remove the companion from this
+                        # ... primary galaxy's initial_pairs list
+                        self.initial_pairs[i].remove(secondary)
 
-        print self.initial_pairs
+        self.initial_pairs = np.array(self.initial_pairs)
 
-    def findPairsAP(self, maxsep):
+    def makeMasks(self, mass_cut, mass_ratio = 4.):
+        """ Make the various masks to enforce angular separation, stellar mass ratio and
+            selection conditions. Also produce the PPF(z).
 
-        maxsep = maxsep*u.arcsecond
-        maxsep = maxsep.to(u.deg)
-
-        primary_cat = SkyCoord( ra=self.RA[self.initial], dec=self.Dec[self.initial])
-
-        seps = []
-        for gal in primary_cat:
-            tmpseps = self.coords.separation( gal )
-            seps.append( np.where((tmpseps < maxsep))[0] )
-
-
-        print seps
-
-
-
-    def redshiftProb(self,p1x,p2x):
-        """ Generate the redshift probability function, Z(z), for two galaxies
-
-        Args:
-            p1x (int): Index of the central galaxy.
-            p2x (int): Index of the companion galaxy.
-
-        """
-
-        top = self.pz[p1x,:] * self.pz[p2x,:]
-        bot = 0.5 * (self.pz[p1x,:] + self.pz[p2x,:])
-
-        return top/bot
-
-    def genAngularMask(self,thetas):
-        """
-
-        """
-        theta_minz = self.r_min / self.cosmo.angular_diameter_distance(self.zr)
-        theta_maxz = self.r_max / self.cosmo.angular_diameter_distance(self.zr)
-        thetas_cube = thetas * np.ones( (len(thetas), len(self.zr) ) )
-        angularMask = np.array( (thetas_cube <= theta_maxz) * (thetas_cube >= theta_minz) )
-        return angularMask
-
-    def genMassMask(self,cidx,pidx):
-        """ Generate the stellar mass mask that defines the merger ratio of interest.
-
-        Args:
-            cidx (int or 1-d array): Central galaxy indices.
-            pidx (int or 1-d array): Pair/companion galaxy indices.
+            Args:
+                mass_cut (float or float-array): Defines the stellar mass cut to be included
+                    in the primary sample.
+                mass_ratio (float): Ratio of stellar masses to be considered a pair.
 
         """
 
-        if cidx.shape != pidx.shape:
-            print 'Cannot generate mass mask! Index arrays not the same shape - please check'
-        cmz, pmz = self.mz[cidx,:], self.mz[pidx,:]
+        dA_z = self.cosmo.angular_diameter_distance(self.zr).to(u.kpc)
 
+        z_msks, sep_msks, sel_msks, Nzpair = [], [], [], []
+
+        for i, primary in enumerate( self.initial ):
+
+            primary_pz = self.pz[ primary, :]
+            primary_mz = self.mz[ primary, :]
+            Zz_arrays, Zpair_fracs = [], []
+            sep_arrays, sel_arrays = [], []
+
+            for j, secondary in enumerate(self.initial_pairs[i]):
+
+                # Redshift probability
+                # -----------------------------------------
+                secondary_pz = self.pz[ secondary, :]
+                Nz = (primary_pz + secondary_pz) * 0.5
+                Zz = (primary_pz * secondary_pz) / Nz
+                Zz_arrays.append( Zz )
+                Zpair_fracs.append( simps(Zz,self.zr) )
+
+                # Separation masks
+                # -----------------------------------------
+                # Sepration (in degrees) between primary and secondary
+                d2d = self.coords[primary].separation(self.coords[secondary]).to(u.deg)
+                # Min/max angular separation as a function of redshift
+                theta_min = ((self.r_min / dA_z)*u.rad).to(u.deg)
+                theta_max = ((self.r_max / dA_z)*u.rad).to(u.deg)
+                # Create boolean array
+                sep_msk = np.logical_and( d2d >= theta_min , d2d <= theta_max )
+                sep_arrays.append( sep_msk )
+
+                # Selection masks
+                # ----------------------------------------- 
+                secondary_mz = self.mz[ secondary, :]
+                # Create the boolean array enforcing conditions
+                sel_msk = np.logical_and(primary_mz >= mass_cut, (primary_mz/secondary_mz) <= mass_ratio)
+                sel_arrays.append( sel_msk )
+            
+            sel_msks.append( sel_arrays )
+            z_msks.append( Zz_arrays )
+            Nzpair.append( Zpair_fracs )
+            sep_msks.append( sep_arrays )
+
+        # Set class variables
+        self.redshiftProbs = np.array( z_msks )
+        self.separationMasks = np.array( sep_msks )
+        self.selectionMasks = np.array( sel_msks )
 
     def plotSample(self,galaxy_indices,legend=True,draw_frame=False):
 
