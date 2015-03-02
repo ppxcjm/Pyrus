@@ -1,10 +1,11 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import atpy
-import astropy.unit as u
-from astropy.coordinates import SkyCoord
+import astropy.units as u
+from astropy.coordinates import SkyCoord, Angle
 from scipy.spatial import cKDTree
 from scipy.integrate import trapz, simps
+import time
 
 class Pairs(object):
     """ Main class for photometric pair-count analysis
@@ -52,11 +53,11 @@ class Pairs(object):
         self.photometry_path = photometry
         self.phot_catalog = atpy.Table(self.photometry_path,type='fits')
         self.IDs = self.phot_catalog[idcol]
-        self.RA = self.phot_catalog[racol]
-        self.Dec = self.phot_catalog[deccol]
+        self.RA = self.phot_catalog[racol] * u.degree
+        self.Dec = self.phot_catalog[deccol] * u.degree
         self.coords = SkyCoord(self.RA,self.Dec,frame='icrs')
         
-    def initialSample(self,intitial):
+    def initialSample(self,initial):
         """ Define and set up initial sample of galaxies in which to find pairs
         
         Initial sample definition is done OUTSIDE of class and then loaded to allow
@@ -70,12 +71,58 @@ class Pairs(object):
         """
         self.initial  = initial
         
-        
+
     def findPairs(self,maxsep,minsep=0,units=u.arcsecond):
-        """ 
-        Docs
-        """
+        """ Find close pairs with an angular separation between minsep and maxsep
         
+        Makes use of cKDTree to vastly speed up computation - output is identical
+        to that of brute force method.
+        
+        """
+        start = time.time()
+        
+        # Convert Sky Coordinates to cartesian xyz for correct 3d distances
+        cartxyz = self.coords.cartesian.xyz
+        flatxyz = cartxyz.reshape((3, np.prod(cartxyz.shape) // 3))
+        
+        sample_tree = cKDTree( flatxyz.value.T[self.initial] ) 
+        
+        # Convert on-sky angular separation to matching cartesian 3d distance
+        # (See astropy.coordinate documentation for seach_around_sky)
+        # If changing function input to distance separation and redshift, MUST convert
+        # to an angular separation before here.
+        r_maxsep = (2 * np.sin(Angle(maxsep * units) / 2.0)).value
+        r_minsep = (2 * np.sin(Angle(minsep * units) / 2.0)).value
+        
+        
+        # Computed trees might be worth keeping, maybe not
+        self.full_tree = cKDTree( flatxyz.value.T ) 
+        self.initial_pairs = sample_tree.query_ball_tree(self.full_tree, 
+                                                         r_maxsep)
+        self.initial_tooclose = sample_tree.query_ball_tree(self.full_tree, 
+                                                            r_minsep)
+
+        # Remove both self-matches and matches below min separation
+        for i, primary in enumerate(self.initial):
+            # Sort so it matches brute force output
+            self.initial_pairs[i] = np.sort(self.initial_pairs[i])
+            self.initial_tooclose[i] = np.sort(self.initial_tooclose[i])
+
+            # Delete self-matches and matches within minsep
+            self.initial_pairs[i] = np.delete(self.initial_pairs[i],
+                                              np.searchsorted(self.initial_pairs[i],
+                                                              self.initial_tooclose[i]))
+
+        print( 'Time taken: {0:.2f} s'.format( time.time() - start ) )
+
+
+    def findPairs2(self,maxsep,minsep=0,units=u.arcsecond):
+        """ Find close pairs with an angular separation between minsep and maxsep
+        
+        Uses brute force loop to find all galaxies in target separation range
+        for each galaxy in the initial sample. Of order ~500-1000x slower than cKDTree
+        """
+        start = time.time()
         self.initial_pairs = []
         
         
@@ -85,27 +132,7 @@ class Pairs(object):
             idxcatalog = np.where(catalogmsk)[0]
             self.initial_pairs.append(idxcatalog)
 
-    def findPairs2(self,maxsep,minsep=0,units=u.arcsecond):
-        """ 
-        Docs
-        """
-        sample_tree = cKDTree( zip(self.RA.value[self.initial], self.Dec.value[self.initial]) )
-        
-        self.full_tree = cKDTree(zip(self.RA.value, self.Dec.value)) # Might be worth keeping, maybe not
-        
-        self.initial_pairs = sample_tree.query_ball_tree(self.full_tree, 
-                                                         (maxsep*units).to('degree').value)
-        initial_tooclose = sample_tree.query_ball_tree(self.full_tree, 
-                                                       (minsep*units).to('degree').value)
-        # Individual sets of matches need sorting before comparing to findPairs brute force
-
-        # Remove both self-matches and matches below min separation
-        for i, primary in enumerate(self.initial):
-            for gal in initial_tooclose[i]:
-                del self.initial_pairs[i][self.initial_pairs[i] == gal]
-            
-            self.initial_pairs[i] = numpy.sort(self.initial_pairs[i])
-            # Sort so it matches brute force output
+        print( 'Time taken: {0:.2f} s'.format( time.time() - start ) )
     
     def trimPairs(self):
         """ Remove duplicate pairs for initial target sample
@@ -130,7 +157,7 @@ class Pairs(object):
                     if secondary_mass > primary_mass:
                         del self.initial_pairs[i][j]
                     else:
-                        k = numpy.where(self.initial == secondary)
+                        k = np.where(self.initial == secondary)
                         del self.initial_pairs[k][self.initial_pairs[k] == primary]
 
     def redshiftMask(self):
@@ -161,7 +188,7 @@ class Pairs(object):
             for j, secondary in enumerate(self.initial_pairs[i]):
                 dA_z = cosmo.angular_diameter_distance(self.zr).to(runits)
                 d2d = self.coords[primary].separation(self.coords[secondary]).value
-                sep_msk = np.logical_and( (rmin*u.kpc / dA_z) <= d2d , d2d <= (rmax*u.kpc / dA_z))
+                sep_msk = np.logical_and( (rmin*runits / dA_z) <= d2d , d2d <= (rmax*runits / dA_z))
                 sep_arrays.append(sep_msk)
             msks.append(sep_arrays)
         self.separationMasks = msks        
@@ -266,7 +293,7 @@ class Pairs(object):
                                                                    '$z_{peak}$:',
                                                                    self.peakz[primary_index]))
                                                                    
-            Ax[1].plot(self.zr,np.log10(self.mz[secondary,:]),':',lw=2,color='indianred'
+            Ax[1].plot(self.zr,np.log10(self.mz[secondary,:]),':',lw=2,color='indianred',
                        label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
                                                                    '$z_{peak}$:',
                                                                    self.peakz[secondary]))
