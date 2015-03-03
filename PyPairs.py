@@ -1,3 +1,4 @@
+import time
 # Matplotlib, numpy
 import matplotlib.pyplot as plt, numpy as np
 # Astropy
@@ -17,7 +18,7 @@ class Pairs(object):
     Duncan et al. (2014) outputs.
         
     """
-    
+
     def __init__(self, z, redshift_cube, mass_cube, photometry=False, catalog_format = 'fits',
                  idcol = 'ID', racol = 'RA', deccol = 'DEC', cosmology = False):
         """ Load and format appropriately the necessary data for pair-count calculations
@@ -54,12 +55,13 @@ class Pairs(object):
 
         # Set the redshift range array
         self.zr = z
-        # Get the most probable redshift solution
-        self.peakz = np.array([self.zr[galx] for galx in np.argmax(self.pz,axis=1)])
-        self.peakz_arg = np.argmax(self.pz,axis=1)
+
+        self.peakz_arg = np.argmax(self.pz, axis=1)
+        self.peakz = self.zr[self.peakz_arg]
 
         # Class photometry path
         self.photometry_path = photometry
+
         # Attempt to read the catalogue
         try:
             self.phot_catalog = Table.read( self.photometry_path )
@@ -107,7 +109,7 @@ class Pairs(object):
         self.initial = np.array(initial)
 
     # CALCULATION FUNCTIONS
-        
+
     def findInitialPairs(self, z_max = 4.0, z_min = 0.3):
         """ Find an initial list of potential close pair companions based on the already
             defined separations.
@@ -127,11 +129,12 @@ class Pairs(object):
         # Calculate separations
         maxsep = (self.r_max / self.cosmo.angular_diameter_distance( z_min ).to(u.kpc) )*u.rad
         minsep = (self.r_min / self.cosmo.angular_diameter_distance( z_max ).to(u.kpc) )*u.rad
-        
+
         # Convert on-sky angular separation to matching cartesian 3d distance
         # (See astropy.coordinate documentation for seach_around_sky)
         # If changing function input to distance separation and redshift, MUST convert
         # to an angular separation before here.
+
         r_maxsep = (2 * np.sin(Angle(maxsep) / 2.0)).value
         r_minsep = (2 * np.sin(Angle(minsep) / 2.0)).value
         
@@ -175,6 +178,9 @@ class Pairs(object):
                         self.trimmed_pairs[k] = np.delete(self.initial_pairs[k],
                                                           index)
 
+        Ntotal = np.sum([len(self.trimmed_pairs[gal]) for gal in range(len(self.initial))])
+            
+        print ('{0} duplicates out of {1} total pairs trimmed'.format(Nduplicates , Ntotal))
 
         self._max_angsep = maxsep
         self._min_angsep = minsep
@@ -420,7 +426,7 @@ class Pairs(object):
         plt.tight_layout()
         plt.show()
     
-    def plotMz(self,galaxy_indices,legend=True,draw_frame=False):
+    def plotMz(self,galaxy_indices, legend=True, draw_frame=False):
         """ Plot the stellar mass vs redshift for a set of galaxies in sample.
         
         Args:
@@ -448,8 +454,65 @@ class Pairs(object):
         Ax.set_ylim(6.5,11.5)
         Fig.subplots_adjust(right=0.95,top=0.95,bottom=0.14)
         plt.show()
+        
+    def plotPairsMass(self,primary_index, legend=True, draw_frame=False):
+        primary = self.initial[primary_index]
+        secondaries = self.trimmed_pairs[primary_index]
+        
+        for j, secondary in enumerate(secondaries):
+            Fig, Ax = plt.subplots(2,figsize=(4.5,6))
+            Ax[0].plot(self.zr, self.pz[primary,:],'--',lw=2, color='dodgerblue',
+                       label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary],
+                                                                   '$z_{peak}$:',
+                                                                   self.peakz[primary]))
+                                                                   
+            Ax[0].plot(self.zr, self.pz[secondary,:],':', lw=2, color='indianred',
+                       label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
+                                                                   '$z_{peak}$:',
+                                                                   self.peakz[secondary]))
+            if legend:
+                Leg1 = Ax[0].legend(loc='upper right', prop={'size':8})
+                Leg1.draw_frame(draw_frame)
+        
+            Ax[0].set_xlabel('Redshift, z')
+            Ax[0].set_ylabel(r'$P(z)$')
+            Ax[0].text(0.9,0.25, r'{0:s} {1:.2f}'.format('$\mathcal{N}_{z} =$ ',self.Nzpair[primary_index][j]),
+                       horizontalalignment='right',verticalalignment='center',
+                       transform=Ax[0].transAxes)
+            
+            Ax[1].plot(self.zr,np.log10(self.mz[primary,:]),'--',lw=2,color='dodgerblue',
+                       label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary],
+                                                                   '$z_{peak}$:',
+                                                                   self.peakz[primary]))
+                                                                   
+            Ax[1].plot(self.zr,np.log10(self.mz[secondary,:]),':',lw=2,color='indianred',
+                       label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
+                                                                   '$z_{peak}$:',
+                                                                   self.peakz[secondary]))
+            
+            selmask = np.invert(self.selectionMasks[primary_index][j])
+            zr_mask = np.ma.masked_where(selmask, self.zr)
+            mz1 = np.ma.masked_where(selmask, np.log10(self.mz[primary,:]) )
+            mz2 = np.ma.masked_where(selmask, np.log10(self.mz[secondary,:]) )
 
-    def plotPairs(self,primary_index,legend=True,draw_frame=False):
+            Ax[1].plot(zr_mask, mz1, '--', lw=5,color='dodgerblue',
+                       label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary],
+                                                                   '$z_{peak}$:',
+                                                                   self.peakz[primary]))
+
+            Ax[1].plot(zr_mask, mz2, ':', lw=5,color='indianred',
+                       label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
+                                                                   '$z_{peak}$:',
+                                                                   self.peakz[secondary]))
+
+
+            Ax[1].set_xlabel('Redshift, z')
+            Ax[1].set_ylabel(r'$\log_{10} \rm{M}_{\star}$')
+            Ax[1].set_ylim(6.5,11.5)
+            Fig.subplots_adjust(left=0.15,right=0.95,top=0.95,bottom=0.1,hspace=0.25)
+            plt.show()
+
+    def plotPairsPz(self,primary_index,legend=True,draw_frame=False):
 
         primary = self.initial[primary_index]
         secondaries = self.initial_pairs[primary_index]
