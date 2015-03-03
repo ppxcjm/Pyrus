@@ -110,13 +110,18 @@ class Pairs(object):
 
     # CALCULATION FUNCTIONS
 
-    def findInitialPairs(self, z_max = 4.0, z_min = 0.3):
+    def findInitialPairs(self, z_max = 4.0, z_min = 0.3, tol = 0.02):
         """ Find an initial list of potential close pair companions based on the already
             defined separations.
 
             Args:
                 z_min (float): Minimum redshift being considered by the work. For calc-
                     ulation of maximum separation.
+                z_max (float): Minimum redshift being considered by the work. For calc-
+                    ulation of maximum separation.
+                tol (float): Fractional tolerance in separation criteria for generating
+                    initial list of potential pairs. Account for discrete nature of max
+                    and min separation calculations.
 
         """
 
@@ -124,11 +129,17 @@ class Pairs(object):
         cartxyz = self.coords.cartesian.xyz
         flatxyz = cartxyz.reshape((3, np.prod(cartxyz.shape) // 3))
         
-        sample_tree = cKDTree( flatxyz.value.T[self.initial] )
+        sample_tree = cKDTree(flatxyz.value.T[self.initial])
+
+        # Calculate min and maximum angular diameter distance in redshift range
+        # in case it spans angular diameter distance turnover.
+        dAdist = self.cosmo.angular_diameter_distance(np.linspace(z_min, z_max, 1000))
+        dAmin = dAdist.min()*(1-tol)
+        dAmax = dAdist.max()*(1+tol)
 
         # Calculate separations
-        maxsep = (self.r_max / self.cosmo.angular_diameter_distance( z_min ).to(u.kpc) )*u.rad
-        minsep = (self.r_min / self.cosmo.angular_diameter_distance( z_max ).to(u.kpc) )*u.rad
+        maxsep = (self.r_max / dAmin.to(u.kpc))*u.rad
+        minsep = (self.r_min / dAmax.to(u.kpc))*u.rad
 
         # Convert on-sky angular separation to matching cartesian 3d distance
         # (See astropy.coordinate documentation for seach_around_sky)
@@ -185,7 +196,7 @@ class Pairs(object):
         self._max_angsep = maxsep
         self._min_angsep = minsep
 
-    def makeMasks(self, mass_cut, mass_ratio = 4.):
+    def makeMasks(self, min_mass, max_mass=13, mass_ratio = 4.):
         """ Make the various masks to enforce angular separation, stellar mass ratio and
             selection conditions. Also produce the Z(z)-function.
 
@@ -201,8 +212,8 @@ class Pairs(object):
 
         for i, primary in enumerate( self.initial ):
 
-            primary_pz = self.pz[ primary, :]
-            primary_mz = self.mz[ primary, :]
+            primary_pz = self.pz[primary, :]
+            primary_mz = self.mz[primary, :]
             Zz_arrays, Zpair_fracs = [], []
             sep_arrays, sel_arrays = [], []
 
@@ -214,7 +225,8 @@ class Pairs(object):
             theta_max = ((self.r_max / dA_z)*u.rad)
 
             # Make a selection function mask
-            pri_msks.append( np.array( np.log10(self.mz[primary]) >= mass_cut, dtype=bool ) )
+            pri_msks.append( np.logical_and(np.log10(self.mz[primary]) >= min_mass,
+                                            np.log10(self.mz[primary]) < max_mass))
 
             for j, secondary in enumerate(self.trimmed_pairs[i]):
 
@@ -222,9 +234,9 @@ class Pairs(object):
                 # -----------------------------------------
                 secondary_pz = self.pz[ secondary, :]
                 Nz = (primary_pz + secondary_pz) * 0.5
-                Zz = np.nan_to_num( (primary_pz * secondary_pz) / Nz )
-                Zz_arrays.append( Zz )
-                Zpair_fracs.append( simps(Zz,self.zr) )
+                Zz = np.nan_to_num((primary_pz * secondary_pz) / Nz)
+                Zz_arrays.append(Zz)
+                Zpair_fracs.append(simps(Zz,self.zr))
 
                 # Separation masks
                 # -----------------------------------------
@@ -232,7 +244,7 @@ class Pairs(object):
                 # d2d = self.coords[primary].separation(self.coords[secondary]).to(u.deg)
 
                 # Create boolean array
-                sep_msk = np.logical_and( d2d[j] >= theta_min , d2d[j] <= theta_max )
+                sep_msk = np.logical_and(d2d[j] >= theta_min , d2d[j] <= theta_max)
                 sep_arrays.append( sep_msk )
 
                 # Selection masks
@@ -240,10 +252,10 @@ class Pairs(object):
                 secondary_mz = self.mz[ secondary, :]
                 # Create the boolean array enforcing conditions
                 sel_msk = np.array((primary_mz/secondary_mz) <= mass_ratio, dtype=bool)
-                # sel_msk = np.logical_and(primary_mz >= 10.**mass_cut, (primary_mz/secondary_mz) <= mass_ratio)
                 sel_arrays.append( sel_msk )
             
             sel_msks.append( sel_arrays )
+            sel_msks_primary.append(sel_msk_primary)
             z_msks.append( Zz_arrays )
             Nzpair.append( Zpair_fracs )
             sep_msks.append( sep_arrays )
@@ -280,34 +292,139 @@ class Pairs(object):
         self.PPF_pairs = np.array( PPF_pairs )
         self._PPF_total = np.array( PPF_total )
 
-    def mergerFraction(self, zmin, zmax):
-        """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
+    def mergerIntegrator(self, zmin, zmax, initial, trimmed_pairs,
+                         redshiftProbs, pairMasks, separationMasks,
+                         selectionMasks, PPF_pairs):
+        """ Function to integrate the total merger fraction.
+        
+            Generalised to receive any set of inputs rather than stored
+            values so that both true value and error estimates can be 
+            calculated through resampling methods, e.g. bootstrap
+            (implemented below) or jackknife (yet to implement)
 
             Args:
                 zmin (float):   minimum redshift to calculate f_m
                 zmax (float):   maximum redshift to calculate f_m
 
+                initial
+                trimmed_pairs
+                redshiftProbs
+                pairMasks
+                separationMasks
+                selectionMasks
+                PPF_pairs
+                #Pair weights (when calculated)
+
         """
 
         # Redshift mask we want to examine
-        zmask = np.logical_and( self.zr >= zmin, self.zr <= zmax )
+        zmask = np.logical_and(self.zr >= zmin, self.zr <= zmax)
 
         # Integrate over pairs
         k_sum = 0.
-        k_int = self.PPF_pairs # * self.pairWeights
-        for i, primary in enumerate(self.initial):
-            if self.PPF_pairs[i]: # Some are empty
-                for j, secondary in enumerate(self.trimmed_pairs[i]):
-                    k_sum += np.sum( simps( k_int[i][j][zmask], self.zr[zmask], ) )
+        k_int = PPF_pairs # * self.pairWeights
+        for i, primary in enumerate(initial):
+            if PPF_pairs[i]: # Some are empty
+                for j, secondary in enumerate(trimmed_pairs[i]):
+                    k_sum += np.sum(simps(k_int[i][j][zmask], self.zr[zmask], ) )
 
         # Integrate over the primary galaxies
-        i_int = self.pz[ self.initial ] * self.selectionMasks # * galaxyweights
+        i_int = self.pz[ initial ] * selectionMasks # * galaxyweights
         i_sum = np.sum( simps( i_int[:,zmask], self.zr[zmask], axis = 1) )
 
         # Set the merger fraction
-        self.fm = k_sum / i_sum
+        fm = k_sum / i_sum
+        return fm
+
+    def mergerFraction(self, zmin, zmax):
+        """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
+            
+            Args:
+                zmin (float):   minimum redshift to calculate f_m
+                zmax (float):   maximum redshift to calculate f_m
+
+        """
+        fm = self.mergerIntegrator(zmin, zmax, self.initial, self.trimmed_pairs,
+                                   self.redshiftProbs, self.pairMasks,
+                                   self.separationMasks, self.selectionMasks,
+                                   self.PPF_pairs) # Add pair weights when done
+        self.fm = fm
         self._zrange = [zmin, zmax]
         return self.fm
+
+    def bootstrapMergers(self, zmin, zmax, nsamples  = 10):
+        """ Estimate error on fm through bootstrap resampling of initial sample
+        
+            Args:
+                nsamples (int): Number of bootstrap resampling iterations.
+                    Default = 10 (will make larger for final estimates)
+        
+        """
+        
+        try:
+            float(self.fm) # Double check merger fraction already calculated
+        except AttributeError:
+            # Calculate if not yet created
+            self.mergerFraction(zmin, zmax)
+        
+        fm_array = []
+        
+        for iteration in arange(nsamples):
+            # Sample with replacement the observed sample
+            newsample = np.random.randint(len(self.initial), size = len(self.initial))
+            
+            # Make relevant lists for new bootstrap sample
+            initial = np.array([self.initial[gal] for gal in newsample]
+            trimmed_pairs = np.array([self.trimmed_pairs[gal] for gal in newsample])
+            redshiftProbs = np.array([self.redshiftProbs[gal] for gal in newsample])
+            pairMasks = np.array([self.pairMasks[gal] for gal in newsample])
+            separationMasks = np.array([self.separationMasks[gal] for gal in newsample])
+            selectionMasks = np.array([self.selectionMasks[gal] for gal in newsample])
+            PPF_pairs = np.array([self.PPF_pairs[gal] for gal in newsample])
+            #Add pair_weights when done
+            
+            # Calculate fm for sample
+            fm_newsample = self.mergerIntegrator(zmin, zmax, initial, trimmed_pairs,
+                                                 redshiftProbs, pairMasks,
+                                                 separationMasks, selectionMasks,
+                                                 PPF_pairs)
+            fm_array.append(fm_newsample)
+            
+        fm_array = np.fm_array
+        
+        # Estimate StDev for resampled values
+        fm_std = np.sqrt( np.sum((fm_array - self.fm)**2) / nsamples )
+        self.fm_std = fm_std
+        return self.fm, self.fm_std
+
+    # def mergerFraction(self, zmin, zmax):
+    #     """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
+    #
+    #         Args:
+    #             zmin (float):   minimum redshift to calculate f_m
+    #             zmax (float):   maximum redshift to calculate f_m
+    #
+    #     """
+    #
+    #     # Redshift mask we want to examine
+    #     zmask = np.logical_and( self.zr >= zmin, self.zr <= zmax )
+    #
+    #     # Integrate over pairs
+    #     k_sum = 0.
+    #     k_int = self.PPF_pairs # * self.pairWeights
+    #     for i, primary in enumerate(self.initial):
+    #         if self.PPF_pairs[i]: # Some are empty
+    #             for j, secondary in enumerate(self.trimmed_pairs[i]):
+    #                 k_sum += np.sum( simps( k_int[i][j][zmask], self.zr[zmask], ) )
+    #
+    #     # Integrate over the primary galaxies
+    #     i_int = self.pz[ self.initial ] * self.selectionMasks # * galaxyweights
+    #     i_sum = np.sum( simps( i_int[:,zmask], self.zr[zmask], axis = 1) )
+    #
+    #     # Set the merger fraction
+    #     self.fm = k_sum / i_sum
+    #     self._zrange = [zmin, zmax]
+    #     return self.fm
 
     # SEPARATE MASKING FUNCTIONS
 
