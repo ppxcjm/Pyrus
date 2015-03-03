@@ -2,12 +2,12 @@
 import matplotlib.pyplot as plt, numpy as np, time
 # Astropy
 import astropy.units as u
-from astropy.coordinates import SkyCoord
+from astropy.coordinates import SkyCoord, Angle
 from astropy.table import Table
 from astropy.cosmology import FlatLambdaCDM
 # Scipy
 from scipy.spatial import cKDTree
-from scipy.integrate import simps
+from scipy.integrate import simps, trapz, cumtrapz
 
 class Pairs(object):
     """ Main class for photometric pair-count analysis
@@ -51,6 +51,7 @@ class Pairs(object):
         else:
             self.pz = redshift_cube
             self.mz = mass_cube
+
         # Set the redshift range array
         self.zr = z
         # Get the most probable redshift solution
@@ -113,12 +114,20 @@ class Pairs(object):
 
         # Calculate the maximum separation (in degrees) on the sky
         maxsep = (self.r_max / self.cosmo.angular_diameter_distance( z_min ).to(u.kpc) )*u.rad
-        # Set up the binary table of the initial sample's RA and D
-        primary_tree = cKDTree( zip(self.RA.value[self.initial], self.Dec.value[self.initial]) )
-        # Set up the binary table of the full catalogue's RA and Dec
-        self.full_tree = cKDTree(zip(self.RA.value, self.Dec.value)) # Might be worth keeping, maybe not
-        # Search for objects within maxsep separation
-        self.initial_pairs = primary_tree.query_ball_tree(self.full_tree, maxsep.to(u.deg).value)
+        # Need to convert to (x,y,z) to get correct 3D distances
+        cartxyz = self.coords.cartesian.xyz
+        flatxyz = cartxyz.reshape((3, np.prod(cartxyz.shape) // 3))
+        # Primary galaxy binary tree
+        primary_tree = cKDTree( flatxyz.value.T[self.initial] ) 
+        # Convert on-sky angular separation to matching cartesian 3d distance
+        # (See astropy.coordinate documentation for seach_around_sky)
+        # If changing function input to distance separation and redshift, MUST convert
+        # to an angular separation before here.
+        r_maxsep = (2 * np.sin(maxsep / 2.0)).value        
+        # r_maxsep = (2 * np.sin(Angle(maxsep) / 2.0)).value        
+        # Computed trees might be worth keeping, maybe not
+        self.full_tree = cKDTree( flatxyz.value.T ) 
+        self.initial_pairs = primary_tree.query_ball_tree(self.full_tree, r_maxsep)
         # Remove self-matches
         # Returns an array of length = len(self.initial), each element is a list of potential companion indices.
         for p, i_idx in enumerate(self.initial):
@@ -140,20 +149,21 @@ class Pairs(object):
                         self.initial_pairs[i].remove(secondary)
 
         self.initial_pairs = np.array(self.initial_pairs)
+        self.trimmed_pairs = np.copy(self.initial_pairs)
+        self.max_angsep = maxsep
 
     def makeMasks(self, mass_cut, mass_ratio = 4.):
         """ Make the various masks to enforce angular separation, stellar mass ratio and
-            selection conditions. Also produce the PPF(z).
+            selection conditions. Also produce the Z(z)-function.
 
             Args:
                 mass_cut (float or float-array): Defines the stellar mass cut to be included
-                    in the primary sample.
+                    in the primary sample. Units of log10(stellar mass).
                 mass_ratio (float): Ratio of stellar masses to be considered a pair.
 
         """
 
         dA_z = self.cosmo.angular_diameter_distance(self.zr).to(u.kpc)
-
         z_msks, sep_msks, sel_msks, Nzpair = [], [], [], []
 
         for i, primary in enumerate( self.initial ):
@@ -163,32 +173,40 @@ class Pairs(object):
             Zz_arrays, Zpair_fracs = [], []
             sep_arrays, sel_arrays = [], []
 
+            # Get angular distances of all companions
+            d2d = self.coords[primary].separation(self.coords[self.trimmed_pairs[i]]).to(u.rad)
+
+            # Min/max angular separation as a function of redshift
+            theta_min = ((self.r_min / dA_z)*u.rad)
+            theta_max = ((self.r_max / dA_z)*u.rad)
+
             for j, secondary in enumerate(self.initial_pairs[i]):
 
                 # Redshift probability
                 # -----------------------------------------
                 secondary_pz = self.pz[ secondary, :]
                 Nz = (primary_pz + secondary_pz) * 0.5
-                Zz = (primary_pz * secondary_pz) / Nz
+                Zz = np.nan_to_num( (primary_pz * secondary_pz) / Nz )
                 Zz_arrays.append( Zz )
                 Zpair_fracs.append( simps(Zz,self.zr) )
+
+                if np.isnan( secondary_pz ).any():  print 'secondary pz nan', secondary
+                if np.isnan( primary_pz ).any():  print 'primary pz nan', primary
 
                 # Separation masks
                 # -----------------------------------------
                 # Sepration (in degrees) between primary and secondary
-                d2d = self.coords[primary].separation(self.coords[secondary]).to(u.deg)
-                # Min/max angular separation as a function of redshift
-                theta_min = ((self.r_min / dA_z)*u.rad).to(u.deg)
-                theta_max = ((self.r_max / dA_z)*u.rad).to(u.deg)
+                # d2d = self.coords[primary].separation(self.coords[secondary]).to(u.deg)
+
                 # Create boolean array
-                sep_msk = np.logical_and( d2d >= theta_min , d2d <= theta_max )
+                sep_msk = np.logical_and( d2d[j] >= theta_min , d2d[j] <= theta_max )
                 sep_arrays.append( sep_msk )
 
                 # Selection masks
                 # ----------------------------------------- 
                 secondary_mz = self.mz[ secondary, :]
                 # Create the boolean array enforcing conditions
-                sel_msk = np.logical_and(primary_mz >= mass_cut, (primary_mz/secondary_mz) <= mass_ratio)
+                sel_msk = np.logical_and(primary_mz >= 10.**mass_cut, (primary_mz/secondary_mz) <= mass_ratio)
                 sel_arrays.append( sel_msk )
             
             sel_msks.append( sel_arrays )
@@ -200,6 +218,40 @@ class Pairs(object):
         self.redshiftProbs = np.array( z_msks )
         self.separationMasks = np.array( sep_msks )
         self.selectionMasks = np.array( sel_msks )
+        self.Nzpair = np.array( Nzpair )
+
+        # Calc the PPF
+        self.calcPPF()
+
+        # Print some useful info
+        self.printInfo()
+
+
+    def calcPPF(self):
+        """ Function to calculate the unweighted PPF
+
+        """
+
+        PPF_total = []
+        PPF_pairs = []
+
+        for i, primary in enumerate(self.initial):
+            PPF_temp = []
+            for j, secondary in enumerate( self.trimmed_pairs[i] ):
+                ppf_z = (self.redshiftProbs[i][j] * self.selectionMasks[i][j] * self.separationMasks[i][j])
+
+                PPF_temp.append( simps(ppf_z, self.zr) )
+
+            PPF_pairs.append(PPF_temp)
+            PPF_total.append(np.sum(PPF_temp))
+
+
+        self.PPF_pairs = np.array( PPF_pairs )
+        self._PPF_total = np.array( PPF_total )
+
+
+    def mergerFraction(self, zmin, zmax)
+
 
     def plotSample(self,galaxy_indices,legend=True,draw_frame=False):
 
@@ -216,7 +268,6 @@ class Pairs(object):
         Fig.subplots_adjust(right=0.95,top=0.95,bottom=0.14)
         plt.show()
 
-        
     def plotPz(self,galaxy_indices,legend=True,draw_frame=False):
         """ Plot the redshift likelihood distribution for a set of galaxies in sample.
         
@@ -273,3 +324,51 @@ class Pairs(object):
         Ax.set_ylim(6.5,11.5)
         Fig.subplots_adjust(right=0.95,top=0.95,bottom=0.14)
         plt.show()
+
+    def plotPairs(self,primary_index,legend=True,draw_frame=False):
+
+        primary = self.initial[primary_index]
+        secondaries = self.initial_pairs[primary_index]
+        
+        for j, secondary in enumerate(secondaries):
+            Fig, Ax = plt.subplots(2,figsize=(6,9))
+            # Plot the primary P(z)
+            Ax[0].plot(self.zr,cumtrapz(self.pz[primary,:], self.zr, initial=0),'--',lw=2,color='b',
+                        label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary_index],
+                                                                   '$z_{peak}$:',
+                                                                   self.peakz[primary_index]))
+            # Plot the secondary P(z)
+            Ax[0].plot(self.zr,cumtrapz(self.pz[secondary,:], self.zr, initial=0),':',lw=2,color='r',
+                        label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
+                                                                   '$z_{peak}$:',
+                                                                   self.peakz[secondary]))
+            # Plot the Z function
+            Ax[0].plot(self.zr,cumtrapz(self.redshiftProbs[primary_index][j], self.zr, initial=0), '--k', lw=2.5)
+            # Legend
+            if legend:
+                Leg1 = Ax[0].legend(loc='upper right', prop={'size':8})
+                Leg1.draw_frame(draw_frame)
+            # Labels, limits
+            Ax[0].set_xlabel('Redshift, z')
+            Ax[0].set_ylabel(r'$\int P(z)$')
+            Ax[0].set_xlim(0,2), Ax[0].set_ylim(0,1.1)
+            # Plot the Number of pairs
+            Ax[0].text(0.75,0.1, r'{0:s} {1:.3f}'.format('$\mathcal{N}_{z} =$ ', self.Nzpair[primary_index][j]), transform=Ax[0].transAxes)
+            
+            Fig.subplots_adjust(right=0.95,top=0.95,bottom=0.14)
+        
+        plt.show()
+
+    def printInfo(self):
+
+        print
+        print '#'*70
+        print '\t Pair information:'
+        print '\t \t - Separations: r_min = {0:1.1f}, r_max = {1:1.1f}'.format( self.r_min, self.r_max )
+        print '\t \t - Maximum separation = {0:1.2f}'.format( self.max_angsep.to(u.arcsec) )
+        print '\t \t - {0} galaxies in primary sample'.format( len( self.initial) )
+        print '\t \t - {0} companion galaxies identified'.format( np.sum([ len(self.initial_pairs[i]) for i in range(len(self.initial)) ]) )
+        print '\t \t - Sum over Nz = {0:.3f}'.format( np.sum(np.sum(self.Nzpair)) )
+        print '\t \t - Unweighted sum over PPFs = {0:.3f}'.format( np.sum(self._PPF_total))
+        print '#'*70
+        print
