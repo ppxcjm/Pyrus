@@ -256,7 +256,7 @@ class Pairs(object):
         """
         return None
         
-    def PPF(self):
+    def PPF(self,zmin,zmax):
         """ Function to calculate un-weighted PPF
         
         Temporary function to calculate integrated PPF without area or redshift
@@ -265,6 +265,8 @@ class Pairs(object):
         """
         self.PPF_total = [] # Sum over all pairs for each primary
         self.PPF_pairs = [] # Arrays of PPF for each pair
+        minind = np.argmin(np.abs(self.zr-zmin))
+        maxind = np.argmin(np.abs(self.zr-zmax))
         
         for i, primary in enumerate(self.initial):
             PPF_temp = []
@@ -272,16 +274,18 @@ class Pairs(object):
                 ppf_z = (self.redshiftMasks[i][j] * self.selectionMasks[i][j] * 
                          self.separationMasks[i][j])
                          
-                PPF_temp.append(simps(ppf_z, self.zr))
-                
+                PPF_temp.append(simps(ppf_z[minind:maxind+1], self.zr[minind:maxind+1]))
+            
             self.PPF_pairs.append(PPF_temp)
             self.PPF_total.append(np.sum(PPF_temp))
             
-    def denominator(self,mass_cut):
+    def denominator(self,zmin,zmax,mass_cut):
         """ Temporary function
         
         """
         msks = []
+        minind = np.argmin(np.abs(self.zr-zmin))
+        maxind = np.argmin(np.abs(self.zr-zmax))
         
         for i, primary in enumerate(self.initial):
             sel_msks = []
@@ -289,7 +293,7 @@ class Pairs(object):
             primary_pz = self.pz[primary, :]
             sel_msk = np.array((primary_mz >= mass_cut))
                 
-            msks.append(simps(primary_pz * sel_msk, self.zr))
+            msks.append(simps((primary_pz * sel_msk)[minind:maxind+1], self.zr[minind:maxind+1]))
         self.bottom = msks  
        
     def plotPz(self,galaxy_indices, legend=True, draw_frame=False):
