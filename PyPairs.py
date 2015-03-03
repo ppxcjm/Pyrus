@@ -223,10 +223,6 @@ class Pairs(object):
         # Calc the PPF
         self.calcPPF()
 
-        # Print some useful info
-        self.printInfo()
-
-
     def calcPPF(self):
         """ Function to calculate the unweighted PPF
 
@@ -237,21 +233,49 @@ class Pairs(object):
 
         for i, primary in enumerate(self.initial):
             PPF_temp = []
+            PPF_tot_temp = []
             for j, secondary in enumerate( self.trimmed_pairs[i] ):
                 ppf_z = (self.redshiftProbs[i][j] * self.selectionMasks[i][j] * self.separationMasks[i][j])
 
-                PPF_temp.append( simps(ppf_z, self.zr) )
+                PPF_temp.append( ppf_z )
+                PPF_tot_temp.append( simps(ppf_z, self.zr) )
 
             PPF_pairs.append(PPF_temp)
-            PPF_total.append(np.sum(PPF_temp))
-
+            PPF_total.append(np.sum(PPF_tot_temp))
 
         self.PPF_pairs = np.array( PPF_pairs )
         self._PPF_total = np.array( PPF_total )
 
+    def mergerFraction(self, zmin, zmax):
+        """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
 
-    def mergerFraction(self, zmin, zmax)
+            Args:
+                zmin (float):   minimum redshift to calculate f_m
+                zmax (float):   maximum redshift to calculate f_m
 
+        """
+
+        # Redshift mask we want to examine
+        zmask = (self.zr >= zmin) * (self.zr <= zmax)
+
+        # Integrate over pairs
+        k_sum = 0.
+        k_int = self.PPF_pairs # * self.pairWeights
+        for i, primary in enumerate(self.initial):
+            if self.PPF_pairs[i]:
+                for j, secondary in enumerate(self.trimmed_pairs[i]):
+                    k_sum += np.sum( simps( k_int[i][j][zmask], self.zr[zmask], ) )
+
+        # Integrate over the primary galaxies
+        i_int = self.pz[ self.initial ] # * galaxyweights
+        i_sum = np.sum( simps( i_int[:,zmask], self.zr[zmask], axis = 1) )
+
+        # Set the merger fraction
+        self.fm = k_sum / i_sum
+        self._zrange = [zmin, zmax]
+
+        # Print some useful info
+        self.printInfo()
 
     def plotSample(self,galaxy_indices,legend=True,draw_frame=False):
 
@@ -367,8 +391,9 @@ class Pairs(object):
         print '\t \t - Separations: r_min = {0:1.1f}, r_max = {1:1.1f}'.format( self.r_min, self.r_max )
         print '\t \t - Maximum separation = {0:1.2f}'.format( self.max_angsep.to(u.arcsec) )
         print '\t \t - {0} galaxies in primary sample'.format( len( self.initial) )
-        print '\t \t - {0} companion galaxies identified'.format( np.sum([ len(self.initial_pairs[i]) for i in range(len(self.initial)) ]) )
+        print '\t \t - {0} companion galaxies identified'.format( np.sum([ len(self.trimmed_pairs[i]) for i in range(len(self.initial)) ]) )
         print '\t \t - Sum over Nz = {0:.3f}'.format( np.sum(np.sum(self.Nzpair)) )
-        print '\t \t - Unweighted sum over PPFs = {0:.3f}'.format( np.sum(self._PPF_total))
+        print '\t \t - Unweighted sum over PPFs = {0:.3f}'.format( np.sum(self._PPF_total) )
+        print '\t \t - Weighted f_m = {0:.2f}% over {1:.1f} < z < {2:.1f}'.format( self.fm*100., *self._zrange )
         print '#'*70
         print
