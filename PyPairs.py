@@ -1,16 +1,4 @@
-<<<<<<< HEAD
 import time
-import matplotlib.pyplot as plt
-import numpy as np
-import atpy
-import astropy.units as u
-from astropy.coordinates import SkyCoord
-from astropy.coordinates import Angle
-
-from scipy.spatial import cKDTree
-from scipy.integrate import trapz 
-from scipy.integrate import simps
-=======
 # Matplotlib, numpy
 import matplotlib.pyplot as plt, numpy as np
 # Astropy
@@ -21,7 +9,6 @@ from astropy.cosmology import FlatLambdaCDM
 # Scipy
 from scipy.spatial import cKDTree
 from scipy.integrate import simps, trapz, cumtrapz
->>>>>>> pr/1
 
 class Pairs(object):
     """ Main class for photometric pair-count analysis
@@ -31,14 +18,9 @@ class Pairs(object):
     Duncan et al. (2014) outputs.
         
     """
-    
-<<<<<<< HEAD
-    def __init__(self, z, redshift_cube, mass_cube, photometry, cosmology, catalog_format = 'fits',
-                 idcol = 'ID', racol = 'RA', deccol = 'DEC'):
-=======
+
     def __init__(self, z, redshift_cube, mass_cube, photometry=False, catalog_format = 'fits',
                  idcol = 'ID', racol = 'RA', deccol = 'DEC', cosmology = False):
->>>>>>> pr/1
         """ Load and format appropriately the necessary data for pair-count calculations
         
         Args:
@@ -73,27 +55,13 @@ class Pairs(object):
 
         # Set the redshift range array
         self.zr = z
-<<<<<<< HEAD
+
         self.peakz_arg = np.argmax(self.pz, axis=1)
         self.peakz = self.zr[self.peakz_arg]
-        
-=======
-        # Get the most probable redshift solution
-        self.peakz = np.array([self.zr[galx] for galx in np.argmax(self.pz,axis=1)])
-        self.peakz_arg = np.argmax(self.pz,axis=1)
->>>>>>> pr/1
 
         # Class photometry path
         self.photometry_path = photometry
-<<<<<<< HEAD
-        self.phot_catalog = atpy.Table(self.photometry_path, type='fits')
-        self.IDs = self.phot_catalog[idcol]
-        self.RA = self.phot_catalog[racol] * u.degree
-        self.Dec = self.phot_catalog[deccol] * u.degree
-        self.coords = SkyCoord(self.RA, self.Dec, frame='icrs')
-        self.cosmo = cosmology
-        
-=======
+
         # Attempt to read the catalogue
         try:
             self.phot_catalog = Table.read( self.photometry_path )
@@ -126,7 +94,6 @@ class Pairs(object):
         self.r_min = r_min.to(u.kpc)
         self.r_max = r_max.to(u.kpc)
 
->>>>>>> pr/1
     def initialSample(self,initial):
         """ Define and set up initial sample of galaxies in which to find pairs
         
@@ -142,19 +109,7 @@ class Pairs(object):
         self.initial = np.array(initial)
 
     # CALCULATION FUNCTIONS
-        
-<<<<<<< HEAD
 
-    def findPairs(self, maxsep, minsep=0, units=u.arcsecond):
-        """ Find close pairs with an angular separation between minsep and maxsep
-        
-        Makes use of cKDTree to vastly speed up computation - output is identical
-        to that of brute force method.
-        
-        """
-        start = time.time()
-        
-=======
     def findInitialPairs(self, z_max = 4.0, z_min = 0.3):
         """ Find an initial list of potential close pair companions based on the already
             defined separations.
@@ -165,83 +120,21 @@ class Pairs(object):
 
         """
 
->>>>>>> pr/1
         # Convert Sky Coordinates to cartesian xyz for correct 3d distances
         cartxyz = self.coords.cartesian.xyz
         flatxyz = cartxyz.reshape((3, np.prod(cartxyz.shape) // 3))
         
-<<<<<<< HEAD
-        sample_tree = cKDTree( flatxyz.value.T[self.initial] ) 
-=======
         sample_tree = cKDTree( flatxyz.value.T[self.initial] )
 
         # Calculate separations
         maxsep = (self.r_max / self.cosmo.angular_diameter_distance( z_min ).to(u.kpc) )*u.rad
         minsep = (self.r_min / self.cosmo.angular_diameter_distance( z_max ).to(u.kpc) )*u.rad
->>>>>>> pr/1
-        
+
         # Convert on-sky angular separation to matching cartesian 3d distance
         # (See astropy.coordinate documentation for seach_around_sky)
         # If changing function input to distance separation and redshift, MUST convert
         # to an angular separation before here.
-<<<<<<< HEAD
-        r_maxsep = (2 * np.sin(Angle(maxsep * units) / 2.0)).value
-        r_minsep = (2 * np.sin(Angle(minsep * units) / 2.0)).value
-        
-        
-        # Computed trees might be worth keeping, maybe not
-        self.full_tree = cKDTree(flatxyz.value.T) 
-        self.initial_pairs = sample_tree.query_ball_tree(self.full_tree, 
-                                                         r_maxsep)
-        self.initial_tooclose = sample_tree.query_ball_tree(self.full_tree, 
-                                                            r_minsep)
 
-        # Remove both self-matches and matches below min separation
-        for i, primary in enumerate(self.initial):
-            # Sort so it matches brute force output
-            self.initial_pairs[i] = np.sort(self.initial_pairs[i])
-            self.initial_tooclose[i] = np.sort(self.initial_tooclose[i])
-
-            # Delete self-matches and matches within minsep
-            self.initial_pairs[i] = np.delete(self.initial_pairs[i],
-                                              np.searchsorted(self.initial_pairs[i],
-                                                              self.initial_tooclose[i]))
-
-        print( 'Time taken: {0:.2f} s'.format(time.time() - start) )
-
-
-    def findPairs2(self,maxsep,minsep=0,units=u.arcsecond):
-        """ Find close pairs with an angular separation between minsep and maxsep
-        
-        Uses brute force loop to find all galaxies in target separation range
-        for each galaxy in the initial sample. Of order ~500-1000x slower than cKDTree
-        """
-        start = time.time()
-        self.initial_pairs = []
-        
-        
-        for i, gal in enumerate(self.coords[self.initial]):
-            d2d = gal.separation(self.coords).to(u.arcsecond)
-            catalogmsk = (minsep*units < d2d) * (d2d < maxsep*units)
-            idxcatalog = np.where(catalogmsk)[0]
-            self.initial_pairs.append(idxcatalog)
-
-        print('Time taken: {0:.2f} s'.format(time.time() - start))
-    
-    def trimPairs(self):
-        """ Remove duplicate pairs for initial target sample
-            
-            Steps being taken:
-            ------------------
-            If secondary in initial:
-                - Check which is the highest mass of the pair
-                - If primary is lower mass partner
-                     - remove secondary from pair array
-                - Else if primary is higher mass (i.e. still primary)
-                        Find pairs array for secondary
-                            - remove primary from pair array
-        """
-=======
         r_maxsep = (2 * np.sin(Angle(maxsep) / 2.0)).value
         r_minsep = (2 * np.sin(Angle(minsep) / 2.0)).value
         
@@ -265,7 +158,6 @@ class Pairs(object):
                                                               self.initial_tooclose[i]))
 
         # Trim pairs
->>>>>>> pr/1
         self.trimmed_pairs = np.copy(self.initial_pairs)
         Nduplicates = 0
 
@@ -286,133 +178,9 @@ class Pairs(object):
                         self.trimmed_pairs[k] = np.delete(self.initial_pairs[k],
                                                           index)
 
-<<<<<<< HEAD
         Ntotal = np.sum([len(self.trimmed_pairs[gal]) for gal in range(len(self.initial))])
             
         print ('{0} duplicates out of {1} total pairs trimmed'.format(Nduplicates , Ntotal))
-
-    def redshiftMask(self):
-        
-        msks = []
-        Nzpair = []
-        
-        for i, primary in enumerate(self.initial):
-            # Re-enforce normalisation of the P(z)
-            primary_pz = self.pz[primary,:]
-            primary_pz /= simps(primary_pz, self.zr)
-            
-            Zz_arrays = []
-            Zpair_fracs = []
-            
-            for j, secondary in enumerate(self.trimmed_pairs[i]):
-                secondary_pz = self.pz[secondary,:]
-                secondary_pz /= simps(secondary_pz, self.zr)
-                
-                # Calculate convolved redshift distributions
-                Nz = (primary_pz + secondary_pz) * 0.5
-                Zz = (primary_pz * secondary_pz) / Nz
-                Zz_arrays.append(Zz)
-                Zpair_fracs.append(simps(Zz,self.zr))
-            
-            msks.append(Zz_arrays)
-            Nzpair.append(Zpair_fracs)
-        self.redshiftMasks = msks
-        self.Nzpair = Nzpair
-
-    def separationMask(self,rmax=50,rmin=5,runits = u.kpc):
-        msks = []
-        dA_z = self.cosmo.angular_diameter_distance(self.zr).to(runits)
-        print 'dA calculated \n'
-        print 'Calculating separation masks... ',
-        
-        for i, primary in enumerate(self.initial):
-            print primary, ': ',
-            sep_arrays = []
-            d2d = self.coords[primary].separation(self.coords[self.trimmed_pairs[i]]).to(u.rad)
-            # Calculate angular separation for all pairs around primary
-            theta_min = (rmin*runits / dA_z)*u.rad
-            theta_max = (rmax*runits / dA_z)*u.rad
-            
-            for j, secondary in enumerate(self.trimmed_pairs[i]):
-                print secondary,
-                # Apply upper and lower criteria along redshift array
-                sep_msk = np.logical_and(theta_min <= d2d[j], d2d[j] <= theta_max)
-                sep_arrays.append(sep_msk)
-                
-            msks.append(sep_arrays)
-            print ''
-        
-        print 'Done'
-        self.separationMasks = msks        
-        
-    def selectionMask(self, mass_cut, mass_ratio=4):
-        msks = []
-        
-        for i, primary in enumerate(self.initial):
-            print primary, ': ',
-            sel_msks = []
-            primary_mz = self.mz[primary, :]
-            
-            for j, secondary in enumerate(self.trimmed_pairs[i]):
-                print secondary,
-                secondary_mz = self.mz[secondary, :]
-                sel_msk = np.logical_and(primary_mz >= mass_cut, (primary_mz / secondary_mz) <= mass_ratio)
-                sel_msks.append(sel_msk)
-                
-            msks.append(sel_msks)
-            print ''
-        self.selectionMasks = msks
-        
-    def makeMasks(self, mass_cut, mass_ratio=4, rmax=50, rmin=5, runits=u.kpc):
-        """ If individual mask functions above work correctly. Will add into
-            single function for efficiency since they follow the same loop structure
-            and don't necessarily need to be separate.
-        
-        """
-        return None
-        
-    def PPF(self,zmin,zmax):
-        """ Function to calculate un-weighted PPF
-        
-        Temporary function to calculate integrated PPF without area or redshift
-        quality weights.
-        
-        """
-        self.PPF_total = [] # Sum over all pairs for each primary
-        self.PPF_pairs = [] # Arrays of PPF for each pair
-        minind = np.argmin(np.abs(self.zr-zmin))
-        maxind = np.argmin(np.abs(self.zr-zmax))
-        
-        for i, primary in enumerate(self.initial):
-            PPF_temp = []
-            for j, secondary in enumerate(self.trimmed_pairs[i]):
-                ppf_z = (self.redshiftMasks[i][j] * self.selectionMasks[i][j] * 
-                         self.separationMasks[i][j])
-                         
-                PPF_temp.append(simps(ppf_z[minind:maxind+1], self.zr[minind:maxind+1]))
-            
-            self.PPF_pairs.append(PPF_temp)
-            self.PPF_total.append(np.sum(PPF_temp))
-            
-    def denominator(self,zmin,zmax,mass_cut):
-        """ Temporary function
-        
-        """
-        msks = []
-        minind = np.argmin(np.abs(self.zr-zmin))
-        maxind = np.argmin(np.abs(self.zr-zmax))
-        
-        for i, primary in enumerate(self.initial):
-            sel_msks = []
-            primary_mz = self.mz[primary, :]
-            primary_pz = self.pz[primary, :]
-            sel_msk = np.array((primary_mz >= mass_cut))
-                
-            msks.append(simps((primary_pz * sel_msk)[minind:maxind+1], self.zr[minind:maxind+1]))
-        self.bottom = msks  
-       
-    def plotPz(self,galaxy_indices, legend=True, draw_frame=False):
-=======
 
         self._max_angsep = maxsep
         self._min_angsep = minsep
@@ -631,7 +399,6 @@ class Pairs(object):
         plt.show()
 
     def plotPz(self,galaxy_indices,legend=True,draw_frame=False):
->>>>>>> pr/1
         """ Plot the redshift likelihood distribution for a set of galaxies in sample.
         
         Args:
@@ -687,9 +454,8 @@ class Pairs(object):
         Ax.set_ylim(6.5,11.5)
         Fig.subplots_adjust(right=0.95,top=0.95,bottom=0.14)
         plt.show()
-<<<<<<< HEAD
         
-    def plotPairs(self,primary_index, legend=True, draw_frame=False):
+    def plotPairsMass(self,primary_index, legend=True, draw_frame=False):
         primary = self.initial[primary_index]
         secondaries = self.trimmed_pairs[primary_index]
         
@@ -745,9 +511,8 @@ class Pairs(object):
             Ax[1].set_ylim(6.5,11.5)
             Fig.subplots_adjust(left=0.15,right=0.95,top=0.95,bottom=0.1,hspace=0.25)
             plt.show()
-=======
 
-    def plotPairs(self,primary_index,legend=True,draw_frame=False):
+    def plotPairsPz(self,primary_index,legend=True,draw_frame=False):
 
         primary = self.initial[primary_index]
         secondaries = self.initial_pairs[primary_index]
@@ -797,4 +562,3 @@ class Pairs(object):
         print '\t \t - Weighted f_m = {0:.2f}% over {1:.1f} < z < {2:.1f}'.format( self.fm*100., *self._zrange )
         print '#'*70
         print
->>>>>>> pr/1
