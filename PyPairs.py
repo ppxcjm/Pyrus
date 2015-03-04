@@ -9,6 +9,7 @@ from astropy.cosmology import FlatLambdaCDM
 # Scipy
 from scipy.spatial import cKDTree
 from scipy.integrate import simps, trapz, cumtrapz
+from scipy.interpolate import interp1d
 
 class Pairs(object):
     """ Main class for photometric pair-count analysis
@@ -19,7 +20,7 @@ class Pairs(object):
         
     """
 
-    def __init__(self, z, redshift_cube, mass_cube, photometry=False, catalog_format = 'fits',
+    def __init__(self, z, redshift_cube, mass_cube, z_best=False, photometry=False, catalog_format = 'fits',
                  idcol = 'ID', racol = 'RA', deccol = 'DEC', cosmology = False):
         """ Load and format appropriately the necessary data for pair-count calculations
         
@@ -58,6 +59,11 @@ class Pairs(object):
 
         self.peakz_arg = np.argmax(self.pz, axis=1)
         self.peakz = self.zr[self.peakz_arg]
+
+        if z_best:
+            self.z_best = z_best
+        else:
+            self.z_best = self.peakz
 
         # Class photometry path
         self.photometry_path = photometry
@@ -340,21 +346,70 @@ class Pairs(object):
         fm = k_sum / i_sum
         return fm
 
-    def mergerFraction(self, zmin, zmax):
-        """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
-            
+    def calcOdds(self, band, K=0.1, dz=0.01, OSRlim=0.3, mags=True, abzp=False):
+        """ Calculate the Odds parameter for each galaxy and the odds sampling rate (OSR)
+            for the field.
+
             Args:
-                zmin (float):   minimum redshift to calculate f_m
-                zmax (float):   maximum redshift to calculate f_m
+                K (float): parameter detailing limits to integrate around, such that integral
+                    performed over z_best +/- K(1+z).
+                dz (float): redshift range step to interpolate to.
+                OSRlim (float): selected limit to calculate the odds sampling rate (OSR).
+                band (str): column name in photometry catalogue one wishes to parametrise
+                    the OSR as a function of band.
+                mags (bool): True if catalogue contents are in mags; False if in fluxes
+                abzp (float): AB magnitude zero-point of catalogue fluxes for conversion to
+                    AB magnitudes.
 
         """
-        fm = self.mergerIntegrator(zmin, zmax, self.initial, self.trimmed_pairs,
-                                   self.redshiftProbs, self.pairMasks,
-                                   self.separationMasks, self.selectionMasks,
-                                   self.PPF_pairs) # Add pair weights when done
-        self.fm = fm
-        self._zrange = [zmin, zmax]
-        return self.fm
+
+        if self.pz.shape[0] != self.z_best.shape[0]:
+            print "Redshift array and P(z) cube not the same length - please check"
+
+        odds = []
+        zr_i = np.arange( self.zr.min(), self.zr.max()+dz, dz)
+
+        for gal in range(len(self.pz)):
+
+            gal_dz = K*(1.+self.z_best[gal])
+            gal_intmsk = np.logical_and(self.zr >= (self.z_best[gal]-gal_dz), 
+                                                self.zr <= (self.z_best[gal]+gal_dz))
+
+            # Interpolate only the section of self.zr,self.pz that we want to integrate
+            gal_intmsk_i = np.logical_and(zr_i >= (self.z_best[gal]-gal_dz),
+                                                zr_i <= (self.z_best[gal]+gal_dz))
+            gal_pz = np.interp(zr_i[gal_intmsk_i], self.zr[gal_intmsk], self.pz[gal][gal_intmsk])
+            gal_int_i = np.clip(simps(gal_pz, zr_i[gal_intmsk_i]), 0., 1.)
+            
+            odds.append(gal_int_i)
+
+        self.odds = np.array(odds)
+        self._oddsK = K
+
+        # Parameterise it as a function of detection magnitude
+        if not mags:
+            if not abzp:
+                print 'No AB zero-point for flux conversion - please check'
+            mags = -2.5*np.log10( self.phot_catalog[band] ) + abzp
+        else:
+            mags = self.phot_catalog[band]
+
+        magbins = np.arange(17.5,31,0.25)
+        OSRmag = []
+
+        for b in range(len(magbins)-1):
+            umag, lmag = magbins[b], magbins[b+1]
+            binmsk = np.logical_and( mags >= umag, mags <= lmag)
+            binodds = self.odds[binmsk]
+
+            goododds = (self.odds >= OSRlim)
+            goodsum = np.sum( simps(self.pz[binmsk*goododds], self.zr, axis=1), dtype=float )
+            allsum = np.sum( simps(self.pz[binmsk], self.zr, axis=1), dtype=float )
+
+            OSRmag.append(goodsum/allsum)
+
+        self.OSR = np.nan_to_num(OSRmag)
+        self.OSRmags = np.array( [(magbins[i]+magbins[i+1])/2. for i in range(len(magbins)-1) ] )
 
     def bootstrapMergers(self, zmin, zmax, nsamples  = 10):
         """ Estimate error on fm through bootstrap resampling of initial sample
@@ -404,34 +459,34 @@ class Pairs(object):
         self.fm_ste = fm_ste
         return self.fm, self.fm_ste
 
-    # def mergerFraction(self, zmin, zmax):
-    #     """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
-    #
-    #         Args:
-    #             zmin (float):   minimum redshift to calculate f_m
-    #             zmax (float):   maximum redshift to calculate f_m
-    #
-    #     """
-    #
-    #     # Redshift mask we want to examine
-    #     zmask = np.logical_and( self.zr >= zmin, self.zr <= zmax )
-    #
-    #     # Integrate over pairs
-    #     k_sum = 0.
-    #     k_int = self.PPF_pairs # * self.pairWeights
-    #     for i, primary in enumerate(self.initial):
-    #         if self.PPF_pairs[i]: # Some are empty
-    #             for j, secondary in enumerate(self.trimmed_pairs[i]):
-    #                 k_sum += np.sum( simps( k_int[i][j][zmask], self.zr[zmask], ) )
-    #
-    #     # Integrate over the primary galaxies
-    #     i_int = self.pz[ self.initial ] * self.selectionMasks # * galaxyweights
-    #     i_sum = np.sum( simps( i_int[:,zmask], self.zr[zmask], axis = 1) )
-    #
-    #     # Set the merger fraction
-    #     self.fm = k_sum / i_sum
-    #     self._zrange = [zmin, zmax]
-    #     return self.fm
+    def mergerFraction(self, zmin, zmax):
+        """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
+    
+            Args:
+                zmin (float):   minimum redshift to calculate f_m
+                zmax (float):   maximum redshift to calculate f_m
+    
+        """
+    
+        # Redshift mask we want to examine
+        zmask = np.logical_and( self.zr >= zmin, self.zr <= zmax )
+    
+        # Integrate over pairs
+        k_sum = 0.
+        k_int = self.PPF_pairs # * self.pairWeights
+        for i, primary in enumerate(self.initial):
+            if self.PPF_pairs[i]: # Some are empty
+                for j, secondary in enumerate(self.trimmed_pairs[i]):
+                    k_sum += np.sum( simps( k_int[i][j][zmask], self.zr[zmask], ) )
+    
+        # Integrate over the primary galaxies
+        i_int = self.pz[ self.initial ] * self.selectionMasks # * galaxyweights
+        i_sum = np.sum( simps( i_int[:,zmask], self.zr[zmask], axis = 1) )
+    
+        # Set the merger fraction
+        self.fm = k_sum / i_sum
+        self._zrange = [zmin, zmax]
+        return self.fm
 
     # SEPARATE MASKING FUNCTIONS
 
@@ -510,6 +565,34 @@ class Pairs(object):
 
     # VISUALISATION FUNCTIONS
 
+    def plotOSR(self, legend=True, draw_frame=False):
+        Fig = plt.figure(figsize=(6,3.5))
+        Ax = Fig.add_subplot(111)
+
+
+        Ax.plot( self.OSRmags, self.OSR, 'o', color='w', mew=2, mec='dodgerblue')
+
+        Ax.set_ylim(-0.1,1.1)
+        Ax.set_xlabel('AB magnitude')  
+        Ax.set_ylabel('OSR')
+
+        plt.tight_layout()
+        plt.show()
+
+    def plotOdds(self, legend=True, draw_frame=False):
+        Fig = plt.figure(figsize=(6,3.5))
+        Ax = Fig.add_subplot(111)
+
+        Ax.hist(self.odds, np.arange(0.,1.025,0.025), normed=1)
+
+        Ax.set_xlabel('Odds')
+        Ax.set_ylabel('counts')
+        Ax.text(0.05,0.9, r'{0} = ${1:.4f} \times (1+z)$'.format('\Delta z', self._oddsK), 
+                                transform=Ax.transAxes)
+
+        plt.tight_layout()
+        plt.show()
+
     def plotSample(self,galaxy_indices,legend=True,draw_frame=False):
 
         Fig = plt.figure(figsize=(6,6.5))
@@ -544,9 +627,7 @@ class Pairs(object):
         for gal in np.array(galaxy_indices,ndmin=1):
             Ax.plot(self.zr,self.pz[gal,:],lw=2, 
                     label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[gal],'$z_{peak}$:',self.peakz[gal]))
-        if legend:
-            Leg = Ax.legend(loc='upper right', prop={'size':8})
-            Leg.draw_frame(draw_frame)
+
         
         Ax.set_xlabel('Redshift, z')
         Ax.set_ylabel(r'$P(z)$')
