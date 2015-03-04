@@ -302,6 +302,23 @@ class Pairs(object):
         self.PPF_pairs = np.array( PPF_pairs )
         self._PPF_total = np.array( PPF_total )
 
+
+    def mergerFraction(self, zmin, zmax):
+        """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
+            
+            Args:
+                zmin (float):   minimum redshift to calculate f_m
+                zmax (float):   maximum redshift to calculate f_m
+
+        """
+        fm = self.mergerIntegrator(zmin, zmax, self.initial, self.trimmed_pairs,
+                                   self.redshiftProbs, self.pairMasks,
+                                   self.separationMasks, self.selectionMasks,
+                                   self.PPF_pairs) # Add pair weights when done
+        self.fm = fm
+        self._zrange = [zmin, zmax]
+        return self.fm
+
     def mergerIntegrator(self, zmin, zmax, initial, trimmed_pairs,
                          redshiftProbs, pairMasks, separationMasks,
                          selectionMasks, PPF_pairs):
@@ -459,7 +476,7 @@ class Pairs(object):
         self.fm_ste = fm_ste
         return self.fm, self.fm_ste
 
-    def mergerFraction(self, zmin, zmax):
+    def _mergerFraction(self, zmin, zmax):
         """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
     
             Args:
