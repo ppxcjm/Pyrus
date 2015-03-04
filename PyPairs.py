@@ -342,23 +342,6 @@ class Pairs(object):
         fm = k_sum / i_sum
         return fm
 
-    def mergerFraction(self, zmin, zmax):
-        """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
-            
-            Args:
-                zmin (float):   minimum redshift to calculate f_m
-                zmax (float):   maximum redshift to calculate f_m
-
-        """
-        fm = self.mergerIntegrator(zmin, zmax, self.initial, self.trimmed_pairs,
-                                   self.redshiftProbs, self.pairMasks,
-                                   self.separationMasks, self.selectionMasks,
-                                   self.PPF_pairs) # Add pair weights when done
-        self.fm = fm
-        self._zrange = [zmin, zmax]
-        return self.fm
-
-<<<<<<< HEAD
     def calcOdds(self, band, K=0.1, dz=0.01, OSRlim=0.3, mags=True, abzp=False):
         """ Calculate the Odds parameter for each galaxy and the odds sampling rate (OSR)
             for the field.
@@ -423,7 +406,7 @@ class Pairs(object):
 
         self.OSR = np.nan_to_num(OSRmag)
         self.OSRmags = np.array( [(magbins[i]+magbins[i+1])/2. for i in range(len(magbins)-1) ] )
-=======
+
     def bootstrapMergers(self, zmin, zmax, nsamples  = 10):
         """ Estimate error on fm through bootstrap resampling of initial sample
         
@@ -469,35 +452,34 @@ class Pairs(object):
         self.fm_std = fm_std
         return self.fm, self.fm_std
 
-    # def mergerFraction(self, zmin, zmax):
-    #     """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
-    #
-    #         Args:
-    #             zmin (float):   minimum redshift to calculate f_m
-    #             zmax (float):   maximum redshift to calculate f_m
-    #
-    #     """
-    #
-    #     # Redshift mask we want to examine
-    #     zmask = np.logical_and( self.zr >= zmin, self.zr <= zmax )
-    #
-    #     # Integrate over pairs
-    #     k_sum = 0.
-    #     k_int = self.PPF_pairs # * self.pairWeights
-    #     for i, primary in enumerate(self.initial):
-    #         if self.PPF_pairs[i]: # Some are empty
-    #             for j, secondary in enumerate(self.trimmed_pairs[i]):
-    #                 k_sum += np.sum( simps( k_int[i][j][zmask], self.zr[zmask], ) )
-    #
-    #     # Integrate over the primary galaxies
-    #     i_int = self.pz[ self.initial ] * self.selectionMasks # * galaxyweights
-    #     i_sum = np.sum( simps( i_int[:,zmask], self.zr[zmask], axis = 1) )
-    #
-    #     # Set the merger fraction
-    #     self.fm = k_sum / i_sum
-    #     self._zrange = [zmin, zmax]
-    #     return self.fm
->>>>>>> dunkenj/master
+    def _mergerFraction(self, zmin, zmax):
+        """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
+    
+            Args:
+                zmin (float):   minimum redshift to calculate f_m
+                zmax (float):   maximum redshift to calculate f_m
+    
+        """
+    
+        # Redshift mask we want to examine
+        zmask = np.logical_and( self.zr >= zmin, self.zr <= zmax )
+    
+        # Integrate over pairs
+        k_sum = 0.
+        k_int = self.PPF_pairs # * self.pairWeights
+        for i, primary in enumerate(self.initial):
+            if self.PPF_pairs[i]: # Some are empty
+                for j, secondary in enumerate(self.trimmed_pairs[i]):
+                    k_sum += np.sum( simps( k_int[i][j][zmask], self.zr[zmask], ) )
+    
+        # Integrate over the primary galaxies
+        i_int = self.pz[ self.initial ] * self.selectionMasks # * galaxyweights
+        i_sum = np.sum( simps( i_int[:,zmask], self.zr[zmask], axis = 1) )
+    
+        # Set the merger fraction
+        self.fm = k_sum / i_sum
+        self._zrange = [zmin, zmax]
+        return self.fm
 
     # SEPARATE MASKING FUNCTIONS
 
