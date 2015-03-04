@@ -10,6 +10,7 @@ from astropy.cosmology import FlatLambdaCDM
 from scipy.spatial import cKDTree
 from scipy.integrate import simps, trapz, cumtrapz
 from scipy.interpolate import interp1d
+from scipy.interpolate import griddata
 
 class Pairs(object):
     """ Main class for photometric pair-count analysis
@@ -23,8 +24,8 @@ class Pairs(object):
     def __init__(self, z, redshift_cube, mass_cube, band, z_best=False, 
                  photometry=False, catalog_format = 'fits',
                  idcol = 'ID', racol = 'RA', deccol = 'DEC', cosmology = False,
-                 K = 0.075, dz = 0.01, OSRlim = 0.3, mags=True, abzp = False,
-                 mag_min = 17.5, mag_max = 30., mag_step = 0.5):
+                 K = 0.05, dz = 0.01, OSRlim = 0.3, mags=True, abzp = False,
+                 mag_min = 15, mag_max = 30.5, mag_step = 0.25, SNR = False, banderr='ERR'):
         """ Load and format appropriately the necessary data for pair-count calculations
         
         Args:
@@ -60,6 +61,9 @@ class Pairs(object):
                 mag_min (float): Bright limit for OSR parametrisation
                 mag_max (float): Faint limit for OSR parametrisation
                 mag_step (float): Magnitude step-size for OSR parametrisation
+
+                SNR (bool or float): If float, the SNR criteria to apply to all sources in catalog
+                banderr (str): Suffix for 'band' to find error column in photometry catalog
         
         Returns:
             Public attributes created and appropriately formatted for later 
@@ -97,16 +101,31 @@ class Pairs(object):
         except:
             print("Cannot read photometry catalogue - please check")
 
+
         # Calculate Odds properties and make relevant masks
         print("Calculating Odds properties")
         self.calcOdds(band, K=K, dz=dz, OSRlim=OSRlim, mags=mags, abzp=abzp, 
-                      mag_min=mag_min, mag_max=mag_max, mag_step=mag_step)
-                      
+                      mag_min = mag_min, mag_max = mag_max, mag_step = mag_step)
+        
         self.oddsCut = np.array((self.odds > OSRlim))
 
+        if SNR: # Apply additional SNR cut to full sample
+            if mags: 
+                # SNR Cut in magnitudes
+                snr_mag =  2.5*np.log10(np.e)*(1/SNR)
+                SNRcut = (np.abs(self.phot_catalog[band+banderr]) < snr_mag)
+            else:
+                # SNR cut in fluxes
+                ferr = self.phot_catalog[band+banderr]
+                fmin = (self.phot_catalog[band] > 0.)
+                SNRcut = fmin*((self.phot_catalog[band]/self.phot_catalog[band+banderr]) > SNR)
+            self.oddsCut = np.array(self.oddsCut * SNRcut)
+            
         self.pz = self._pz[self.oddsCut,:]
         self.mz = self._mz[self.oddsCut,:]
 
+        self.odds = self.odds[self.oddsCut]
+        self.OSRmags = self.OSRmags[self.oddsCut]
         # Class ID, position and co-ordinate arrays
         self.IDs = np.array(self.phot_catalog[idcol],dtype=int)[self.oddsCut]
         self.RA = self.phot_catalog[racol][self.oddsCut]
@@ -160,7 +179,7 @@ class Pairs(object):
 
     # CALCULATION FUNCTIONS
 
-    def findInitialPairs(self, z_max = 4.0, z_min = 0.3, tol = 0.02):
+    def findInitialPairs(self, z_max = 4.0, z_min = 0.3, tol = 0.02, exclusions = False):
         """ Find an initial list of potential close pair companions based on the already
             defined separations.
 
@@ -259,8 +278,20 @@ class Pairs(object):
 
         dA_z = self.cosmo.angular_diameter_distance(self.zr).to(u.kpc)
         z_msks, sep_msks, sel_msks, pri_msks, Nzpair = [], [], [], [], []
-
+        pri_weights = []
+        sec_weights = []
+        
         for i, primary in enumerate( self.initial ):
+            # Calculate Primary and Secondary galaxy weights
+            pri = self.OSRweights(self.OSRmags[primary])
+            sec = self.OSRweights(self.OSRmags[self.trimmed_pairs[i]])
+            # if np.isnan(pri):
+            #     pri = 1
+            # sec[np.isnan(sec)] = 1
+            # if np.sum(np.isnan(sec)) > 0:
+            #     print 'ISNAN weight'+str(primary)+' '+str(secondary)
+            pri_weights.append(pri)
+            sec_weights.append(sec)
 
             primary_pz = self.pz[primary, :]
             primary_mz = self.mz[primary, :]
@@ -281,7 +312,7 @@ class Pairs(object):
                                             np.log10(self.mz[primary]) < max_mass))
 
             for j, secondary in enumerate(self.trimmed_pairs[i]):
-
+                
                 # Redshift probability
                 # -----------------------------------------
                 secondary_pz = self.pz[ secondary, :]
@@ -319,7 +350,8 @@ class Pairs(object):
         self.pairMasks = np.array( sel_msks )
         self.selectionMasks = np.array( pri_msks )
         self.Nzpair = np.array( Nzpair )
-
+        self.OSRweights_primary = np.array(pri_weights)
+        self.OSRweights_secondary = np.array(sec_weights)
         # Calc the PPF
         self.calcPPF()
 
@@ -356,15 +388,16 @@ class Pairs(object):
 
         """
         fm = self.mergerIntegrator(zmin, zmax, self.initial, self.trimmed_pairs,
-                                   self.redshiftProbs, self.pairMasks,
-                                   self.separationMasks, self.selectionMasks,
-                                   self.PPF_pairs) # Add pair weights when done
+                                   self.selectionMasks, self.PPF_pairs, 
+                                   self.OSRweights_primary,
+                                   self.OSRweights_secondary) # Add pair weights when done
         self.fm = fm
         self._zrange = [zmin, zmax]
         return self.fm
 
     def mergerIntegrator(self, zmin, zmax, initial, trimmed_pairs,
-                         selectionMasks, PPF_pairs):
+                         selectionMasks, PPF_pairs, OSR_primary,
+                         OSR_secondary):
         """ Function to integrate the total merger fraction.
         
             Generalised to receive any set of inputs rather than stored
@@ -394,12 +427,13 @@ class Pairs(object):
         for i, primary in enumerate(initial):
             if PPF_pairs[i]: # Some are empty
                 for j, secondary in enumerate(trimmed_pairs[i]):
-                    k_sum += simps(k_int[i][j][zmask], self.zr[zmask])
+                    k_sum += (simps(k_int[i][j][zmask], self.zr[zmask]) * 
+                              OSR_secondary[i][j])
 
             # Integrate over the primary galaxies
             # Re-enforce Pz normalisation
             i_pz = self.pz[primary] / simps(self.pz[primary], self.zr)
-            i_int = i_pz * selectionMasks[i] # * galaxyweights
+            i_int = i_pz * selectionMasks[i] * OSR_primary[i]
             i_sum += simps( i_int[zmask], self.zr[zmask])
 
         # Set the merger fraction
@@ -409,7 +443,7 @@ class Pairs(object):
         return fm
         
     def calcOdds(self, band, K=0.1, dz=0.01, OSRlim=0.3, mags=True, abzp=False,
-                 mag_min = 17.5, mag_max = 30., mag_step = 0.25):
+                 mag_min = 15, mag_max = 30.5, mag_step = 0.25):
         """ Calculate the Odds parameter for each galaxy and the odds sampling rate (OSR)
             for the field.
 
@@ -426,7 +460,6 @@ class Pairs(object):
                 mag_min (float): Bright limit for OSR parametrisation
                 mag_max (float): Faint limit for OSR parametrisation
                 mag_step (float): Magnitude step-size for OSR parametrisation
-
         """
 
         if self._pz.shape[0] != self.z_best.shape[0]:
@@ -457,16 +490,22 @@ class Pairs(object):
         if not mags:
             if not abzp:
                 print 'No AB zero-point for flux conversion - please check'
-            mags = -2.5*np.log10( self.phot_catalog[band] ) + abzp
+            self.OSRmags = -2.5*np.log10( self.phot_catalog[band] ) + abzp
         else:
-            mags = self.phot_catalog[band]
+            self.OSRmags = self.phot_catalog[band]
 
+        # Clip mag range in case bins extend past observed photometry
+        if mag_min < np.nanmin(self.OSRmags):
+            mag_min = np.around(np.nanmin(self.OSRmags),1)-mag_step
+        if mag_max >= np.nanmax(self.OSRmags):
+            mag_max = np.around(np.nanmax(self.OSRmags),1)+mag_step
         magbins = np.arange(mag_min, mag_max, mag_step)
+
         OSRmag = []
 
         for b in range(len(magbins)-1):
             umag, lmag = magbins[b], magbins[b+1]
-            binmsk = np.logical_and( mags >= umag, mags <= lmag)
+            binmsk = np.logical_and( self.OSRmags >= umag, self.OSRmags <= lmag)
             binodds = self.odds[binmsk]
 
             # Calculating odds ratio in 'whole' galaxies rather than
@@ -475,10 +514,20 @@ class Pairs(object):
             goodsum = np.sum(binmsk*goododds, dtype=float )
             allsum = np.sum(binmsk, dtype=float )
 
-            OSRmag.append(goodsum/allsum)
+            if allsum == 0.:
+                OSRmag.append(0.)
+            else:
+                OSRmag.append(goodsum/allsum)
 
         self.OSR = np.nan_to_num(OSRmag)
-        self.OSRmags = np.array( [(magbins[i]+magbins[i+1])/2. for i in range(len(magbins)-1) ] )
+        self.OSRmagbins = magbins[1:] + 0.5*np.diff(magbins)
+
+    def OSRweights(self, mag_input):
+        """ OSR Weight function
+        """
+        weights = np.divide(1.0, griddata(self.OSRmagbins, self.OSR, mag_input,
+                                          fill_value=1.))
+        return weights
 
     def bootstrapMergers(self, zmin, zmax, nsamples  = 10):
         """ Estimate error on fm through bootstrap resampling of initial sample
@@ -499,7 +548,7 @@ class Pairs(object):
         
         fm_array = []
         
-        for iteration in arange(nsamples):
+        for iteration in range(nsamples):
             # Sample with replacement the observed sample
             newsample = np.random.randint(len(self.initial), size = len(self.initial))
             
@@ -508,21 +557,23 @@ class Pairs(object):
             trimmed_pairs = np.array([self.trimmed_pairs[gal] for gal in newsample])
             selectionMasks = np.array([self.selectionMasks[gal] for gal in newsample])
             PPF_pairs = np.array([self.PPF_pairs[gal] for gal in newsample])
+            OSR_primary = np.array([self.OSRweights_primary[gal] for gal in newsample])
+            OSR_secondary = np.array([self.OSRweights_secondary[gal] for gal in newsample])
             #Add pair_weights when done
             
             # Calculate fm for sample
             fm_newsample = self.mergerIntegrator(zmin, zmax, initial, trimmed_pairs, 
                                                  selectionMasks,
-                                                 PPF_pairs)
+                                                 PPF_pairs, OSR_primary, OSR_secondary)
             fm_array.append(fm_newsample)
             
-        fm_array = np.fm_array
-        fm_mean = fm_array.sum() / nsamples
+        fm_array = np.array(fm_array)
+        self.fm_mean = fm_array.sum() / nsamples
         
         # Estimate StDev for resampled values
-        fm_ste = np.sqrt( np.sum((fm_array - fm_mean)**2) / (nsamples - 1) )
+        fm_ste = np.sqrt( np.sum((fm_array - self.fm_mean)**2) / (nsamples - 1) )
         self.fm_ste = fm_ste
-        return self.fm, self.fm_ste
+        return self.fm_mean, self.fm_ste
 
     def _mergerFraction(self, zmin, zmax):
         """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
@@ -635,7 +686,7 @@ class Pairs(object):
         Ax = Fig.add_subplot(111)
 
 
-        Ax.plot( self.OSRmags, self.OSR, 'o', color='w', mew=2, mec='dodgerblue')
+        Ax.plot( self.OSRmagbins, self.OSR, 'o', color='w', mew=2, mec='dodgerblue')
 
         Ax.set_ylim(-0.1,1.1)
         Ax.set_xlabel('AB magnitude')  
