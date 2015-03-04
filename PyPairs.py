@@ -298,9 +298,7 @@ class Pairs(object):
         self.PPF_pairs = np.array( PPF_pairs )
         self._PPF_total = np.array( PPF_total )
 
-    def mergerIntegrator(self, zmin, zmax, initial, trimmed_pairs,
-                         redshiftProbs, pairMasks, separationMasks,
-                         selectionMasks, PPF_pairs):
+    def mergerIntegrator(self, zmin, zmax, initial, trimmed_pairs, redshiftProbs, pairMasks, separationMasks, selectionMasks, PPF_pairs):
         """ Function to integrate the total merger fraction.
         
             Generalised to receive any set of inputs rather than stored
