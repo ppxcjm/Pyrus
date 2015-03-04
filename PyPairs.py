@@ -452,7 +452,7 @@ class Pairs(object):
             newsample = np.random.randint(len(self.initial), size = len(self.initial))
             
             # Make relevant lists for new bootstrap sample
-            initial = np.array([self.initial[gal] for gal in newsample]
+            initial = np.array([self.initial[gal] for gal in newsample])
             trimmed_pairs = np.array([self.trimmed_pairs[gal] for gal in newsample])
             redshiftProbs = np.array([self.redshiftProbs[gal] for gal in newsample])
             pairMasks = np.array([self.pairMasks[gal] for gal in newsample])
@@ -604,7 +604,7 @@ class Pairs(object):
 
         Ax.set_xlabel('Odds')
         Ax.set_ylabel('counts')
-        Ax.text(0.05,0.9, r'{0} = ${1:.4f} \times (1+z)$'.format('\Delta z', self._oddsK), 
+        Ax.text(0.05,0.9, r'{0} = {1:.4f} $\times (1+z)$'.format('$\Delta z$', self._oddsK), 
                                 transform=Ax.transAxes)
 
         plt.tight_layout()
