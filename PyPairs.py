@@ -84,13 +84,14 @@ class Pairs(object):
         # Set the redshift range array
         self.zr = z
 
+        # Get the peak of P(z) for every galaxy
         self.peakz_arg = np.argmax(self._pz, axis=1)
         self.peakz = self.zr[self.peakz_arg]
 
         if z_best:
-            self.z_best = z_best
+            self._z_best = z_best
         else:
-            self.z_best = self.peakz
+            self._z_best = self.peakz
 
         # Class photometry path
         self.photometry_path = photometry
@@ -106,7 +107,6 @@ class Pairs(object):
         print("Calculating Odds properties")
         self.calcOdds(band, K=K, dz=dz, OSRlim=OSRlim, mags=mags, abzp=abzp, 
                       mag_min = mag_min, mag_max = mag_max, mag_step = mag_step)
-        
         self.oddsCut = np.array((self.odds > OSRlim))
 
         if SNR: # Apply additional SNR cut to full sample
@@ -120,12 +120,20 @@ class Pairs(object):
                 fmin = (self.phot_catalog[band] > 0.)
                 SNRcut = fmin*((self.phot_catalog[band]/self.phot_catalog[band+banderr]) > SNR)
             self.oddsCut = np.array(self.oddsCut * SNRcut)
-            
+
         self.pz = self._pz[self.oddsCut,:]
         self.mz = self._mz[self.oddsCut,:]
 
+        self.z_best = self._z_best[self.oddsCut]
+
+        # Enforce P(z) normalisation
+        factors = simps( self.pz, self.zr, axis=1)
+        for gal in range(len(self.pz)):
+            self.pz[gal,:] /= factors[gal]
+
         self.odds = self.odds[self.oddsCut]
         self.OSRmags = self.OSRmags[self.oddsCut]
+
         # Class ID, position and co-ordinate arrays
         self.IDs = np.array(self.phot_catalog[idcol],dtype=int)[self.oddsCut]
         self.RA = self.phot_catalog[racol][self.oddsCut]
@@ -277,6 +285,7 @@ class Pairs(object):
             Args:
                 mass_cut (float or float-array): Defines the stellar mass cut to be included
                     in the primary sample. Units of log10(stellar mass).
+                max_mass (float): Maximum stellar mass of a galaxy
                 mass_ratio (float): Ratio of stellar masses to be considered a pair.
 
         """
@@ -466,7 +475,7 @@ class Pairs(object):
                 mag_step (float): Magnitude step-size for OSR parametrisation
         """
 
-        if self._pz.shape[0] != self.z_best.shape[0]:
+        if self._pz.shape[0] != self._z_best.shape[0]:
             print "Redshift array and P(z) cube not the same length - please check"
 
         odds = []
@@ -474,13 +483,13 @@ class Pairs(object):
 
         for gal in range(len(self._pz)):
 
-            gal_dz = K*(1.+self.z_best[gal])
+            gal_dz = K*(1.+self._z_best[gal])
             #gal_intmsk = np.logical_and(self.zr >= (self.z_best[gal]-gal_dz), 
             #                                    self.zr <= (self.z_best[gal]+gal_dz))
 
             # Interpolate only the section of self.zr,self.pz that we want to integrate
-            gal_intmsk_i = np.logical_and(zr_i >= (self.z_best[gal]-gal_dz),
-                                                zr_i <= (self.z_best[gal]+gal_dz))
+            gal_intmsk_i = np.logical_and(zr_i >= (self._z_best[gal]-gal_dz),
+                                                zr_i <= (self._z_best[gal]+gal_dz))
             gal_pz = np.interp(zr_i, self.zr, self._pz[gal,:])
             gal_int_tot = simps(gal_pz, zr_i)
             gal_int_i = np.clip(simps(gal_pz[gal_intmsk_i], zr_i[gal_intmsk_i])/ gal_int_tot, 0., 1.)
@@ -524,7 +533,7 @@ class Pairs(object):
                 OSRmag.append(goodsum/allsum)
 
         self.OSR = np.nan_to_num(OSRmag)
-        self.OSRmagbins = magbins[1:] + 0.5*np.diff(magbins)
+        self.OSRmagbins = magbins[:-1] + 0.5*np.diff(magbins)
 
     def OSRweights(self, mag_input):
         """ OSR Weight function
