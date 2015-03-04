@@ -223,6 +223,8 @@ class Pairs(object):
             Zz_arrays, Zpair_fracs = [], []
             sep_arrays, sel_arrays = [], []
 
+            primary_pz /= simps(primary_pz, self.zr)
+
             # Get angular distances of all companions
             d2d = self.coords[primary].separation(self.coords[self.trimmed_pairs[i]]).to(u.rad)
 
@@ -239,6 +241,8 @@ class Pairs(object):
                 # Redshift probability
                 # -----------------------------------------
                 secondary_pz = self.pz[ secondary, :]
+                secondary_pz /= simps(secondary_pz, self.zr)
+                
                 Nz = (primary_pz + secondary_pz) * 0.5
                 Zz = np.nan_to_num((primary_pz * secondary_pz) / Nz)
                 Zz_arrays.append(Zz)
@@ -298,7 +302,30 @@ class Pairs(object):
         self.PPF_pairs = np.array( PPF_pairs )
         self._PPF_total = np.array( PPF_total )
 
+<<<<<<< HEAD
     def mergerIntegrator(self, zmin, zmax, initial, trimmed_pairs, redshiftProbs, pairMasks, separationMasks, selectionMasks, PPF_pairs):
+=======
+
+    def mergerFraction(self, zmin, zmax):
+        """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
+            
+            Args:
+                zmin (float):   minimum redshift to calculate f_m
+                zmax (float):   maximum redshift to calculate f_m
+
+        """
+        fm = self.mergerIntegrator(zmin, zmax, self.initial, self.trimmed_pairs,
+                                   self.redshiftProbs, self.pairMasks,
+                                   self.separationMasks, self.selectionMasks,
+                                   self.PPF_pairs) # Add pair weights when done
+        self.fm = fm
+        self._zrange = [zmin, zmax]
+        return self.fm
+
+    def mergerIntegrator(self, zmin, zmax, initial, trimmed_pairs,
+                         redshiftProbs, pairMasks, separationMasks,
+                         selectionMasks, PPF_pairs):
+>>>>>>> fb76475c7c4d35fb08a7fc1a7c3a5974ac72a085
         """ Function to integrate the total merger fraction.
         
             Generalised to receive any set of inputs rather than stored
@@ -407,10 +434,12 @@ class Pairs(object):
 
     def bootstrapMergers(self, zmin, zmax, nsamples  = 10):
         """ Estimate error on fm through bootstrap resampling of initial sample
-        
+            
+            Efron (1979) - estimate of Bootstrap Standard Error
+            
             Args:
                 nsamples (int): Number of bootstrap resampling iterations.
-                    Default = 10 (will make larger for final estimates)
+                    Default = 10 (will make larger for final estimates, e.g. 50-100)
         
         """
         
@@ -444,13 +473,14 @@ class Pairs(object):
             fm_array.append(fm_newsample)
             
         fm_array = np.fm_array
+        fm_mean = fm_array.sum() / nsamples
         
         # Estimate StDev for resampled values
-        fm_std = np.sqrt( np.sum((fm_array - self.fm)**2) / nsamples )
-        self.fm_std = fm_std
-        return self.fm, self.fm_std
+        fm_ste = np.sqrt( np.sum((fm_array - fm_mean)**2) / (nsamples - 1) )
+        self.fm_ste = fm_ste
+        return self.fm, self.fm_ste
 
-    def mergerFraction(self, zmin, zmax):
+    def _mergerFraction(self, zmin, zmax):
         """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
     
             Args:
@@ -518,11 +548,11 @@ class Pairs(object):
 
         pair_msks = []
 
-        for i, primary in enumerate( self.initial ):
+        for i, primary in enumerate(self.initial):
             pair_arrays = []
             primary_mz = self.mz[primary, :]
 
-            for j, secondary in enumerate( self.trimmed_pairs[i] ):
+            for j, secondary in enumerate(self.trimmed_pairs[i]):
                 secondary_mz = self.mz[secondary, :]
                 # Create the boolean array enforcing conditions
                 p_msk = np.array((primary_mz/secondary_mz) <= mass_ratio, dtype=bool)
@@ -540,8 +570,11 @@ class Pairs(object):
         for i, primary in enumerate(self.initial):
             Zz_arrays = []
             primary_pz = self.pz[primary]
+            # Re-inforce P(z) normalisation
+            primary_pz /= simps(primary_pz, self.zr)
 
             for j, secondary in enumerate(self.trimmed_pairs[i]):
+                secondary_pz /= simps(secondary_pz, self.zr)
                 secondary_pz = self.pz[ secondary]
                 Nz = (primary_pz + secondary_pz) * 0.5
                 Zz = np.nan_to_num( (primary_pz * secondary_pz) / Nz )
