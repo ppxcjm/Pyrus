@@ -452,7 +452,7 @@ class Pairs(object):
         self.fm_std = fm_std
         return self.fm, self.fm_std
 
-    def _mergerFraction(self, zmin, zmax):
+    def mergerFraction(self, zmin, zmax):
         """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
     
             Args:
