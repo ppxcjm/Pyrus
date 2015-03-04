@@ -113,11 +113,16 @@ class Pairs(object):
         self.Dec = self.phot_catalog[deccol][self.oddsCut]
         
         # Ensure RA and Dec are in degrees
-        if self.RA.unit.physical_type == 'angle':
-            self.RA = self.RA.to(u.deg)
-            self.Dec = self.Dec.to(u.deg)
+        try:
+            if self.RA.unit.physical_type == 'angle':
+                self.RA = self.RA.to(u.deg)
+                self.Dec = self.Dec.to(u.deg)
+            else:
+                self.RA = self.RA.data * u.deg
+                self.Dec = self.Dec.data * u.deg
 
-        else:
+        except AttributeError:
+            # Need a fallback
             self.RA = self.RA.data * u.deg
             self.Dec = self.Dec.data * u.deg
 
