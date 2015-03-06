@@ -5,12 +5,16 @@ import matplotlib.pyplot as plt, numpy as np
 import astropy.units as u
 from astropy.coordinates import SkyCoord, Angle
 from astropy.table import Table
+from astropy.io import fits
 from astropy.cosmology import FlatLambdaCDM
 # Scipy
 from scipy.spatial import cKDTree
 from scipy.integrate import simps, trapz, cumtrapz
 from scipy.interpolate import interp1d
 from scipy.interpolate import griddata
+from scipy.constants import golden
+# Photutils
+from photutils import SkyCircularAnnulus, CircularAnnulus, aperture_photometry
 
 class Pairs(object):
     """ Main class for photometric pair-count analysis
@@ -25,7 +29,8 @@ class Pairs(object):
                  photometry=False, catalog_format = 'fits',
                  idcol = 'ID', racol = 'RA', deccol = 'DEC', cosmology = False,
                  K = 0.05, dz = 0.01, OSRlim = 0.3, mags=True, abzp = False,
-                 mag_min = 15, mag_max = 30.5, mag_step = 0.25, SNR = False, banderr='ERR'):
+                 mag_min = 15, mag_max = 30.5, mag_step = 0.25, SNR = False, banderr='ERR',
+                 maskpath=False):
         """ Load and format appropriately the necessary data for pair-count calculations
         
         Args:
@@ -83,6 +88,7 @@ class Pairs(object):
 
         # Set the redshift range array
         self.zr = z
+        self.maskpath = maskpath
 
         # Get the peak of P(z) for every galaxy
         self.peakz_arg = np.argmax(self._pz, axis=1)
@@ -617,6 +623,61 @@ class Pairs(object):
         self._zrange = [zmin, zmax]
         return self.fm
 
+    def _calcArea(self, primary_index, maskimage_path=False, rmin=0*u.arcsec,
+                    rmax=15*u.arcsec, ps=0.2684*u.arcsec/u.pixel, xy=False, maskdata=False):
+
+        """ Calculate the area of each search annuli masked/unobserved to weight
+            pairs.
+
+            Args:
+                
+        """
+
+        # Load in FITS image
+        if maskdata:
+            image = maskdata
+        else:
+            image = fits.open(maskimage_path)[0]
+        # Create apertures
+        if xy:
+            apertures = CircularAnnulus( self.coords[primary_index], r_in=rmin, r_out=rmax,)
+        else:
+            apertures = SkyCircularAnnulus( self.coords[primary_index], r_in=rmin.to(u.arcsec),
+                r_out=rmax.to(u.arcsec))
+        # Perform sum
+        photo_table = aperture_photometry(image, apertures, method='center')
+        photo_table = photo_table['aperture_sum']
+        # Calculate the fraction of area covered
+        r_min_pix = (rmin / ps)
+        r_max_pix = (rmax / ps)
+        f_area = photo_table / (np.pi*(r_max_pix.value - r_min_pix.value)**2.)
+        # f_area = np.clip(photo_table / (np.pi*(r_max_pix - r_min_pix)**2.), 0., 1.)
+
+        if np.isinf(f_area).any():
+            print 'Some f_area are inf - please check'
+
+        return np.nan_to_num(np.divide(1.,f_area))
+
+    def _areaWeights(self):
+
+        if not self.maskpath:
+            self.areaWeights = np.ones( (len(self.initial),len(self.zr)) )
+            print 'no mask image provided. cannot calculate area weights. assumed unity.'
+        else:
+            maskdata = fits.open(self.maskpath)[0]
+            weights = []
+            zr = np.arange(0.01, self.zr.max()+0.2, 0.2)
+
+            for zz in zr:
+                theta_z_min = (self.r_min.to(u.kpc) / self.cosmo.angular_diameter_distance(zz).to(u.kpc))*u.rad
+                theta_z_max = (self.r_max.to(u.kpc) / self.cosmo.angular_diameter_distance(zz).to(u.kpc))*u.rad
+                area = self._calcArea(self.initial,rmin=theta_z_min.to(u.arcsec),rmax=theta_z_max.to(u.arcsec),
+                            maskdata=maskdata, ps=0.2684*u.arcsec/u.pixel)
+                weights.append(area)
+
+            weights = np.array(weights)
+            self.areaWeights = griddata( zr, weights, self.zr,).T
+
     # SEPARATE MASKING FUNCTIONS
 
     def selectionMask(self, mass_cut):
@@ -818,20 +879,26 @@ class Pairs(object):
                        horizontalalignment='right',verticalalignment='center',
                        transform=Ax[0].transAxes)
             
-            Ax[1].plot(self.zr,np.log10(self.mz[primary,:]),'--',lw=2,color='dodgerblue',
-                       label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary],
-                                                                   '$z_{peak}$:',
-                                                                   self.peakz[primary]))
+            # Ax[1].plot(self.zr,np.log10(self.mz[primary,:]),'--',lw=2,color='dodgerblue',
+            #            label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary],
+            #                                                        '$z_{peak}$:',
+            #                                                        self.peakz[primary]))
                                                                    
-            Ax[1].plot(self.zr,np.log10(self.mz[secondary,:]),':',lw=2,color='indianred',
-                       label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
-                                                                   '$z_{peak}$:',
-                                                                   self.peakz[secondary]))
+            # Ax[1].plot(self.zr,np.log10(self.mz[secondary,:]),':',lw=2,color='indianred',
+            #            label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
+            #                                                        '$z_{peak}$:',
+            #                                                        self.peakz[secondary]))
             
+            
+            print self.selectionMasks[primary_index][j]
             selmask = np.invert(self.selectionMasks[primary_index][j])
+            print selmask
             zr_mask = np.ma.masked_where(selmask, self.zr)
             mz1 = np.ma.masked_where(selmask, np.log10(self.mz[primary,:]) )
             mz2 = np.ma.masked_where(selmask, np.log10(self.mz[secondary,:]) )
+
+            print 'mz1', mz1.shape, 'mz2', mz2.shape, 'zr_mask', zr_mask.shape
+            print zr_mask
 
             Ax[1].plot(zr_mask, mz1, '--', lw=5,color='dodgerblue',
                        label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary],
@@ -846,7 +913,7 @@ class Pairs(object):
 
             Ax[1].set_xlabel('Redshift, z')
             Ax[1].set_ylabel(r'$\log_{10} \rm{M}_{\star}$')
-            Ax[1].set_ylim(6.5,11.5)
+            Ax[1].set_ylim(6.5,12.5)
             Fig.subplots_adjust(left=0.15,right=0.95,top=0.95,bottom=0.1,hspace=0.25)
             plt.show()
 
@@ -856,31 +923,46 @@ class Pairs(object):
         secondaries = self.initial_pairs[primary_index]
         
         for j, secondary in enumerate(secondaries):
-            Fig, Ax = plt.subplots(2,figsize=(6,9))
+            Fig, Ax = plt.subplots(1,figsize=(4.*golden,4.))
             # Plot the primary P(z)
-            Ax[0].plot(self.zr,cumtrapz(self.pz[primary,:], self.zr, initial=0),'--',lw=2,color='b',
+            # Ax.plot(self.zr,cumtrapz(self.pz[primary,:], self.zr, initial=0),'--',lw=2,color='b',
+            #             label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary_index],
+            #                                                        '$z_{peak}$:',
+            #                                                        self.peakz[primary_index]))
+            # # Plot the secondary P(z)
+            # Ax.plot(self.zr,cumtrapz(self.pz[secondary,:], self.zr, initial=0),':',lw=2,color='r',
+            #             label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
+            #                                                        '$z_{peak}$:',
+            #                                                        self.peakz[secondary]))
+            # # Plot the Z function
+            # Ax.plot(self.zr,cumtrapz(self.redshiftProbs[primary_index][j], self.zr, initial=0), '--k', lw=2.5)
+
+            Ax.plot(self.zr,self.pz[primary,:]/self.pz[primary,:].max(),'--',lw=2,color='b',
                         label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary_index],
                                                                    '$z_{peak}$:',
                                                                    self.peakz[primary_index]))
             # Plot the secondary P(z)
-            Ax[0].plot(self.zr,cumtrapz(self.pz[secondary,:], self.zr, initial=0),':',lw=2,color='r',
+            Ax.plot(self.zr,self.pz[secondary,:]/self.pz[secondary,:].max(),':',lw=2,color='r',
                         label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
                                                                    '$z_{peak}$:',
                                                                    self.peakz[secondary]))
             # Plot the Z function
-            Ax[0].plot(self.zr,cumtrapz(self.redshiftProbs[primary_index][j], self.zr, initial=0), '--k', lw=2.5)
+            Ax.plot(self.zr,cumtrapz(self.redshiftProbs[primary_index][j], self.zr, initial=0), '-w', lw=3)
+            Ax.plot(self.zr,cumtrapz(self.redshiftProbs[primary_index][j], self.zr, initial=0), '-k', lw=2)
+
             # Legend
             if legend:
-                Leg1 = Ax[0].legend(loc='upper right', prop={'size':8})
+                Leg1 = Ax.legend(loc='upper right', prop={'size':8,},)
                 Leg1.draw_frame(draw_frame)
             # Labels, limits
-            Ax[0].set_xlabel('Redshift, z')
-            Ax[0].set_ylabel(r'$\int P(z)$')
-            Ax[0].set_xlim(0,2), Ax[0].set_ylim(0,1.1)
+            Ax.set_xlabel('Redshift, z')
+            Ax.set_ylabel(r'$P(z)$')
+            # Ax.set_ylabel(r'$\int P(z)$')
+            Ax.set_xlim(0,3.5), Ax.set_ylim(0,1.1)
             # Plot the Number of pairs
-            Ax[0].text(0.75,0.1, r'{0:s} {1:.3f}'.format('$\mathcal{N}_{z} =$ ', self.Nzpair[primary_index][j]), transform=Ax[0].transAxes)
+            Ax.text(0.75,0.1, r'{0:s} {1:.3f}'.format('$\mathcal{N}_{z} =$ ', self.Nzpair[primary_index][j]), transform=Ax.transAxes)
             
-            Fig.subplots_adjust(right=0.95,top=0.95,bottom=0.14)
+            Fig.subplots_adjust(left=0.10,right=0.95,top=0.95,bottom=0.13)
         
         plt.show()
 
