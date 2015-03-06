@@ -630,6 +630,17 @@ class Pairs(object):
             pairs.
 
             Args:
+
+                primary_index (int or int array): indices of galaxies one wishes to calculate an
+                    aperture for
+                maskimage_path (str): path to mask image. If already opened, pass hdu via maskdata
+                rmin (astropy unit float): inner angle search radius
+                rmax (astropy unit float): outer angle search radius
+                ps (astropy unit float): mask image pixel-scale in appropriate units
+                xy (bool): if true, supplying (x,y) coords for apertures, not an astropy.coordinate
+                    set. NOT IMPLEMENTED.
+                maskdata (fits hdu): supply a astropy.io.fits hdu object so that we do not have to 
+                    keep opening the large file.
                 
         """
 
@@ -640,6 +651,7 @@ class Pairs(object):
             image = fits.open(maskimage_path)[0]
         # Create apertures
         if xy:
+            # NOT IMPLEMENTED YET
             apertures = CircularAnnulus( self.coords[primary_index], r_in=rmin, r_out=rmax,)
         else:
             apertures = SkyCircularAnnulus( self.coords[primary_index], r_in=rmin.to(u.arcsec),
@@ -659,6 +671,14 @@ class Pairs(object):
         return np.nan_to_num(np.divide(1.,f_area))
 
     def _areaWeights(self):
+        """ Calculate the area weights of the galaxies in the initial sample.
+
+        Args:
+            None
+
+        Requirements:
+            photutils
+        """
 
         if not self.maskpath:
             self.areaWeights = np.ones( (len(self.initial),len(self.zr)) )
