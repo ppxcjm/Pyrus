@@ -46,6 +46,7 @@ class Pairs(object):
                 idcol (str): Column name for galaxy IDs
                 racol (str): Column name for galaxy RAs
                 deccol (str): Column name for galaxy DECs
+                maskpath (str): Path to mask file for survey
           
             Cosmology Arguments:
                 cosmology (astropy.cosmology): Astropy.cosmology object
