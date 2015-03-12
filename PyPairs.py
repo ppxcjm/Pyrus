@@ -9,7 +9,7 @@ from astropy.io import fits
 from astropy.cosmology import FlatLambdaCDM
 # Scipy
 from scipy.spatial import cKDTree
-from scipy.integrate import simps, trapz, cumtrapz
+from scipy.integrate import simps, trapz, cumtrapz, quad
 from scipy.interpolate import interp1d
 from scipy.interpolate import griddata
 from scipy.constants import golden
@@ -373,6 +373,7 @@ class Pairs(object):
         self.Nzpair = np.array( Nzpair )
         self.OSRweights_primary = np.array(pri_weights)
         self.OSRweights_secondary = np.array(sec_weights)
+        self._massRatio = mass_ratio
         # Calc the PPF
         self.calcPPF()
 
@@ -698,6 +699,59 @@ class Pairs(object):
 
             weights = np.array(weights)
             self.areaWeights = griddata( zr, weights, self.zr,).T
+
+    def _calcMassCompWeights(self, mf_z, mf_params, mf_fn, massLimFn):
+        """ Calculate the weights needed to ensure that any searches for companions
+            that fall below the mass completeness are weighted appropriately. Following
+            the work of Patton et al. (2000)
+
+            Args:
+                mf_z (float array): mass function redshift bins that correspond to the
+                    parameters given in mf_params
+                mf_params (float array): mass function parameters to pass to mf_fn in order
+                    to generate the mass function  within each redshift bin
+                mf_fn (function name): function to pass *mf_params[i,:] for redshift bin i
+                massLimFn (function name): function to pass redshift z to to get the survey
+                    mass completenes limit at that redshift
+        """
+
+        bin_indices = np.ones_like(self.zr)*-99.
+        # What mass function bin does each z in self.zr correspond to?
+        for bi in range(len(mf_z)-1):
+            binl, binh = mf_z[bi], mf_z[bi+1]
+            mask = np.logical_and( self.zr >= binl, self.zr < binh)
+            bin_indices[mask] = bi
+
+        # If it equals -99, assign a weight of 1 later on.
+        if (bin_indices == -99.).any():
+            print 'WARNING - mass function redshift bins do not match self.zr. Please check.'
+
+        primaryWeights = []
+        for i, primary in enumerate(self.initial):
+            
+            pweight = []
+            for zi, z in enumerate(self.zr):
+
+                if bin_indices[zi] < 0.:
+                    pweight.append(1.)
+                else:
+                    zpmass = self.mz[primary]
+                    zpmasslim = zpmass / self._massRatio
+                    survey_masslim = massLimFn(z)
+
+                    if survey_masslim < zpmasslim:
+                        # No need to integrate
+                        pweight.append(1.)
+                    else:
+                        # Perform integral from Patton et al. (2000) - integrate GSMF from the mass 
+                        # ...of the primary galaxy to the survey mass limit and the
+                        top, _e, _info = quad(mf_fn, survey_masslim, zpmass, args=mf_params[bin_indices[zi]])
+                        bottom, _e, _info = quad(mf_fn, zpmasslim, zpmass, args=mf_params[bin_indices[zi]])
+                        # Total weighting of companion is 1/ (top/bot)
+                        pweight.append( np.divide(1., top/bottom ) )
+
+            primaryWeights.append(pweight)
+        self.massCompWeights = np.array(primaryWeights)
 
     # SEPARATE MASKING FUNCTIONS
 
