@@ -726,32 +726,64 @@ class Pairs(object):
         if (bin_indices == -99.).any():
             print 'WARNING - mass function redshift bins do not match self.zr. Please check.'
 
-        primaryWeights = []
+        # log stellar mass array to act as integration x-axis
+        mass_x = np.arange(7.,14.,0.05) # need to 10*x this later
+
+        # test brute force way
+        primaryFluxInts = []
         for i, primary in enumerate(self.initial):
-            
-            pweight = []
+            # Get the limiting stellar mass at every z
+            m_lim = np.maximum( [self.mz[primary,:]/self._massRatio, massLimFn(self.zr)] )
+
+            primary_z = []
             for zi, z in enumerate(self.zr):
-
-                if bin_indices[zi] < 0.:
-                    pweight.append(1.)
+                # For each redshift, perform the integral
+                if self.mz[primary,zi]/self._massRatio >= massLimFn(self.zr)[zi]:
+                    primary_z.append(1.)
                 else:
-                    zpmass = self.mz[primary]
-                    zpmasslim = zpmass / self._massRatio
-                    survey_masslim = massLimFn(z)
+                    mask = np.logical_and(mass_x >= m_lim[zi], mass_z <= self.mz[primary,zi])
+                    mf_y = mf_fn(mass_z[mask], *mf_params[bin_indices[zi]])
+                    top = simps(mf_y, mass_x[mask])
 
-                    if survey_masslim < zpmasslim:
-                        # No need to integrate
-                        pweight.append(1.)
-                    else:
-                        # Perform integral from Patton et al. (2000) - integrate GSMF from the mass 
-                        # ...of the primary galaxy to the survey mass limit and the
-                        top, _e, _info = quad(mf_fn, survey_masslim, zpmass, args=mf_params[bin_indices[zi]])
-                        bottom, _e, _info = quad(mf_fn, zpmasslim, zpmass, args=mf_params[bin_indices[zi]])
-                        # Total weighting of companion is 1/ (top/bot)
-                        pweight.append( np.divide(1., top/bottom ) )
+                    mask = np.logical_and(mass_x >= self.mz[primary,zi]/self._massRatio, 
+                                mass_x < self.mz[primary,zi])
+                    mf_y = mf_fn(mass_z[mask], *mf_params[bin_indices[zi]])
+                    bottom = simps(mf_y, mass_x[mask])
 
-            primaryWeights.append(pweight)
-        self.massCompWeights = np.array(primaryWeights)
+                    primary_z.append( top/bottom )
+
+            primaryFluxInts.append(primary_z)
+
+
+        self.fluxWeights = np.array(primaryFluxInts)
+
+
+        # primaryWeights = []
+        # for i, primary in enumerate(self.initial):
+
+        #     pweight = []
+        #     for zi, z in enumerate(self.zr):
+
+        #         if bin_indices[zi] < 0.:
+        #             pweight.append(1.)
+        #         else:
+        #             zpmass = self.mz[primary]
+        #             zpmasslim = zpmass / self._massRatio
+        #             survey_masslim = massLimFn(z)
+
+        #             if survey_masslim < zpmasslim:
+        #                 # No need to integrate
+        #                 pweight.append(1.)
+        #             else:
+        #                 # Perform integral from Patton et al. (2000) - integrate GSMF from the mass 
+        #                 # ...of the primary galaxy to the survey mass limit and the
+        #                 top, _e, _info = quad(mf_fn, survey_masslim, zpmass, args=mf_params[bin_indices[zi]])
+        #                 bottom, _e, _info = quad(mf_fn, zpmasslim, zpmass, args=mf_params[bin_indices[zi]])
+        #                 # Total weighting of companion is 1/ (top/bot)
+        #                 pweight.append( np.divide(1., top/bottom ) )
+
+        #     primaryWeights.append(pweight)
+        # self.massCompWeights = np.array(primaryWeights)
 
     # SEPARATE MASKING FUNCTIONS
 
