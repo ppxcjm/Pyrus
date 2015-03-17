@@ -886,3 +886,239 @@ class Pairs(object):
         print '\t \t - Weighted f_m = {0:.2f}% over {1:.1f} < z < {2:.1f}'.format( self.fm*100., *self._zrange )
         print '#'*70
         print
+        
+
+class MockPairs(object):
+    """ Pair-count analysis for SAM mock catalog data        
+    """
+
+    def __init__(self, catalog, field_width=False, field_height=False, catalog_format = 'fits',
+                 redshift_col = 'z', mass_col = 'Mstar', 
+                 racol = 'RA', deccol = 'DEC', cosmology = False):
+        """ Load and format appropriately the necessary data for pair-count calculations
+        
+        Args:
+            Catalog Arguments:
+                photometry (str): Path to photometry catalog
+                catalog_format (str): Catalog format, e.g. 'fits' or 'ascii'
+                idcol (str): Column name for galaxy IDs
+                racol (str): Column name for galaxy RAs
+                deccol (str): Column name for galaxy DECs
+          
+            Cosmology Arguments:
+                cosmology (astropy.cosmology): Astropy.cosmology object
+                
+                    if cosmology == None: FlatLambdaCDM with H0=70, Om0=0.3 
+                        assumed.
+
+        Returns:
+            Public attributes created and appropriately formatted for later 
+                use and access
+        
+        """
+
+        self.catalog_path = catalog
+        # Attempt to read the catalogue
+        try:
+            self.catalog = Table.read( self.catalog_path, format = catalog_format )
+        except:
+            print("Cannot read photometry catalogue - please check")
+
+
+        self._RA = self.catalog[racol]
+        self._Dec = self.catalog[deccol]
+        self._z = self.catalog[redshift_col].data
+        self._mass = self.catalog[mass_col].data
+        
+        # Ensure RA and Dec are in degrees
+        if self._RA.unit.physical_type == 'angle':
+            self._RA = self._RA.to(u.deg)
+            self._Dec = self._Dec.to(u.deg)
+
+        else:
+            self._RA = self._RA.data * u.deg
+            self._Dec = self._Dec.data * u.deg
+
+        self._coords = SkyCoord(self._RA,self._Dec,frame='icrs')       
+        
+        
+        # Set up initial sub-region
+        
+        self.setSubField(field_width, field_height, fixed = True)
+        
+        # Set up cosmology
+        if not cosmology:
+            self.cosmo = FlatLambdaCDM( H0=70, Om0=0.3 )
+        else:
+            self.cosmo = cosmology
+
+    def setSubField(self, field_width=False, field_height=False, fixed = False):
+        """ Create sub-region from mock.
+        """
+        RA_min, RA_max = self._RA.min(), self._RA.max()
+        Dec_min, Dec_max = self._Dec.min(), self._Dec.max()
+        dDec = Dec_max - Dec_min
+        dRA = RA_max - RA_min
+    
+        if field_width:
+            if fixed:
+                self.subRA = RA_min + 0.5*dRA
+                self.subDec = Dec_min + 0.5*dDec
+            else:
+                self.subRA = (RA_min + 0.5*field_width) + (np.random.rand() * (RA_max-RA_min-field_width))
+                self.subDec = (Dec_min + 0.5*field_height) + (np.random.rand() * (Dec_max-Dec_min-field_height))
+
+            self.AreaCut = np.logical_and(np.abs(self._RA - self.subRA) < 0.5*field_width,
+                                     np.abs(self._Dec - self.subDec) < 0.5*field_height)
+        
+            self.RA = self._RA[self.AreaCut]
+            self.Dec = self._Dec[self.AreaCut]
+            self.coords = self._coords[self.AreaCut]
+            self.z = self._z[self.AreaCut]
+            self.mass = self._mass[self.AreaCut]
+        else:
+            RAcut = np.logical_and(self._RA < (RA_max- 0.05*dRA), self._RA > (RA_min + 0.05*dRA))
+            Deccut = np.logical_and(self._Dec < (Dec_max - 0.05*dDec), self._Dec > (Dec_min + 0.05*dDec))
+            
+            self.AreaCut = np.logical_and(RAcut, Deccut)
+            self.RA = self._RA[self.AreaCut]
+            self.Dec = self._Dec[self.AreaCut]
+            self.coords = self._coords[self.AreaCut]
+            self.z = self._z[self.AreaCut]
+            self.mass = self._mass[self.AreaCut]           
+
+    def setSeparation(self, r_min, r_max):
+        """ Define the physical radius conditions of the class. Designed this way so 
+                can change this on the fly if need be.
+
+        Args:
+            r_min (astropy.unit float): Minimum physical radius for close pairs.
+            r_max (astropy.unit float): Maximum physical radius for close pairs.
+
+        """
+        # Set the class properties
+        self.r_min = r_min.to(u.kpc)
+        self.r_max = r_max.to(u.kpc)
+
+    def findPairs(self, z_min = 0.3, z_max = 4.0, ztol = 0.02, tol = 0.02,
+                  min_mass = 9.5, max_mass = 13.,ratio = 4.):
+        """ Find an initial list of potential close pair companions based on the already
+            defined separations.
+
+            Args:
+                z_min (float): Minimum redshift being considered by the work. For calc-
+                    ulation of maximum separation.
+                z_max (float): Minimum redshift being considered by the work. For calc-
+                    ulation of maximum separation.
+                tol (float): Fractional tolerance in separation criteria for generating
+                    initial list of potential pairs. Account for discrete nature of max
+                    and min separation calculations.
+
+        """
+
+        # Convert Sky Coordinates to cartesian xyz for correct 3d distances
+
+        self.sample_mr = np.array((self.mass >= (min_mass - np.log10(ratio))))
+        self.sample_mr *= np.logical_and(z_min-ztol < self.z, self.z < z_max+ztol)
+        
+        sample_cut = np.logical_and(z_min < self.z[self.sample_mr], self.z[self.sample_mr] < z_max)
+        sample_cut *= np.array(self.mass[self.sample_mr] >= min_mass)
+        sample = np.where(sample_cut)[0]
+        
+        masses = self.mass[self.sample_mr]
+        coords = self.coords[self.sample_mr]
+        z_mr = self.z[self.sample_mr]
+
+        cartxyz = coords.cartesian.xyz
+        flatxyz = cartxyz.reshape((3, np.prod(cartxyz.shape) // 3))
+                
+        # Calculate min and maximum angular diameter distance in redshift range
+        # in case it spans angular diameter distance turnover.
+        dAdist = self.cosmo.angular_diameter_distance(np.linspace(z_min, z_max, 1000))
+        dAmin = dAdist.min()*(1-tol)
+        dAmax = dAdist.max()*(1+tol)
+
+        # Calculate separations
+        maxsep = (self.r_max / dAmin.to(u.kpc))*u.rad
+        minsep = (self.r_min / dAmax.to(u.kpc))*u.rad
+
+        # Convert on-sky angular separation to matching cartesian 3d distance
+        # (See astropy.coordinate documentation for seach_around_sky)
+        # If changing function input to distance separation and redshift, MUST convert
+        # to an angular separation before here.
+
+        r_maxsep = (2 * np.sin(Angle(maxsep) / 2.0)).value
+        r_minsep = (2 * np.sin(Angle(minsep) / 2.0)).value
+        
+        dA_exact = self.cosmo.angular_diameter_distance(z_mr[sample]).to(u.kpc)
+        max_exact = (self.r_max / dA_exact) * u.rad
+        min_exact = (self.r_min / dA_exact) * u.rad
+        
+        # Computed trees might be worth keeping, maybe not
+        sample_tree = cKDTree(flatxyz.value.T[sample])
+        full_tree = cKDTree(flatxyz.value.T) 
+        initial_pairs = sample_tree.query_ball_tree(full_tree, 
+                                                    r_maxsep)
+        self.trimmed = []
+
+        self.exact_pairs = []
+        self.exact_pairs_sum = []
+        # Remove both self-matches and matches below min separation
+        for i, primary in enumerate(sample):
+            if i % 100 == 0:
+                print i
+                
+            if initial_pairs[i]:
+            # Sort so it matches brute force output
+                initial_pairs[i] = np.sort(initial_pairs[i])
+
+                z_sep = np.abs(z_mr[primary] - z_mr[initial_pairs[i]]) / (1 + z_mr[primary])
+                r_sep = coords[primary].separation(coords[initial_pairs[i]]).to(u.rad).value
+                pair = np.logical_and(r_sep >= min_exact[i].value,r_sep <= max_exact[i].value)
+                pair *= np.logical_and(z_sep < 0.0017, 
+                                       np.abs(masses[primary] - masses[initial_pairs[i]]) < np.log10(ratio))
+
+                # if sum(pair) > 0:
+                #     print i
+                #     print r_sep, min_exact[i].value, max_exact[i].value
+                #     print z_sep,
+                #     print (len(initial_pairs[i][pair]))
+
+                if sum(pair):
+                    self.exact_pairs.append(initial_pairs[i][pair])
+                    self.exact_pairs_sum.append(len(initial_pairs[i][pair]))
+                    self.trimmed.append(primary)
+            # Delete self-matches and matches within minsep
+        # Trim pairs
+        self.trimmed_pairs = np.copy(self.exact_pairs)
+        
+        Nduplicates = 0
+
+        for i, primary in enumerate(self.trimmed):
+            for j, secondary in enumerate(self.exact_pairs[i]):
+                if secondary in self.trimmed:
+                    
+                    Nduplicates += 1 # Counter to check if number seems sensible
+
+                    primary_mass = masses[primary]
+                    secondary_mass = masses[secondary]
+                    
+                    if secondary_mass > primary_mass:
+                        self.trimmed_pairs[i] = np.delete(self.exact_pairs[i], j)
+                    else:
+                        k = np.where(self.trimmed == secondary)[0][0]
+                        index = np.where(self.exact_pairs[k] == primary)[0][0]
+                        self.trimmed_pairs[k] = np.delete(self.exact_pairs[k], index)
+                    
+        self.Npairs = np.array([len(self.trimmed_pairs[gal]) for gal in range(len(self.trimmed))])
+        self.Npairs_total = np.sum(self.Npairs)
+        self.Ninitial = float(len(sample))
+        
+        self.fm = self.Npairs_total / self.Ninitial
+
+        #Ntotal = np.sum([len(trimmed_pairs[gal]) for gal in range(len(sample))])
+            
+        #print ('{0} duplicates out of {1} total pairs trimmed'.format(Nduplicates , Ntotal))
+
+        self._max_angsep = maxsep
+        self._min_angsep = minsep
