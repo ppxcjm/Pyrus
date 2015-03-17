@@ -167,6 +167,7 @@ class Pairs(object):
             self.cosmo = FlatLambdaCDM( H0=70, Om0=0.3 )
         else:
             self.cosmo = cosmology
+            
 
     # DEFINITION FUNCTIONS
 
@@ -328,8 +329,10 @@ class Pairs(object):
             theta_min = ((self.r_min / dA_z)*u.rad)
             theta_max = ((self.r_max / dA_z)*u.rad)
 
-            # Make a selection function mask
-            pri_msks.append( np.logical_and(np.log10(self.mz[primary]) >= min_mass,
+            # Apply redshift dependent mass limit
+            min_mass_zr = np.maximum(min_mass, np.log10(self._massCompleteness(self.zr)))
+            # Make a selection function mask            
+            pri_msks.append( np.logical_and(np.log10(self.mz[primary]) >= min_mass_zr,
                                             np.log10(self.mz[primary]) < max_mass))
 
             for j, secondary in enumerate(self.trimmed_pairs[i]):
@@ -357,7 +360,8 @@ class Pairs(object):
                 # ----------------------------------------- 
                 secondary_mz = self.mz[ secondary, :]
                 # Create the boolean array enforcing conditions
-                sel_msk = np.array((primary_mz/secondary_mz) <= mass_ratio, dtype=bool)
+                sel_msk = np.logical_and((primary_mz/secondary_mz) <= mass_ratio,
+                                         secondary_mz > self._massCompleteness(self.zr))
                 sel_arrays.append( sel_msk )
             
             sel_msks.append( sel_arrays )
@@ -789,11 +793,17 @@ class Pairs(object):
                         redefine the completeness curve seperately.
             
             """
-            mass_limit = griddata(self._comp_zr, 
-                                  0.4*(self._comp_magnitude - self.magLim),
-                                  redshifts)
-
-            return 10**mass_limit
+            try:
+                mass_limit = 10**(griddata(self._comp_zr, 
+                                           0.4*(self._comp_magnitude - self.magLim),
+                                           redshifts))
+            except AttributeError:
+                mass_limit = 1e-10
+                # If 'setMassCompleteness' function isn't called this ensures
+                # that any corresponding booleans return True so code can be
+                # run without and redshift dependent mass/flux cut applied
+                
+            return mass_limit
             
         # primaryWeights = []
         # for i, primary in enumerate(self.initial):
