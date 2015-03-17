@@ -5,12 +5,16 @@ import matplotlib.pyplot as plt, numpy as np
 import astropy.units as u
 from astropy.coordinates import SkyCoord, Angle
 from astropy.table import Table
+from astropy.io import fits
 from astropy.cosmology import FlatLambdaCDM
 # Scipy
 from scipy.spatial import cKDTree
-from scipy.integrate import simps, trapz, cumtrapz
+from scipy.integrate import simps, trapz, cumtrapz, quad
 from scipy.interpolate import interp1d
 from scipy.interpolate import griddata
+from scipy.constants import golden
+# Photutils
+from photutils import SkyCircularAnnulus, CircularAnnulus, aperture_photometry
 
 class Pairs(object):
     """ Main class for photometric pair-count analysis
@@ -25,7 +29,8 @@ class Pairs(object):
                  photometry=False, catalog_format = 'fits',
                  idcol = 'ID', racol = 'RA', deccol = 'DEC', cosmology = False,
                  K = 0.05, dz = 0.01, OSRlim = 0.3, mags=True, abzp = False,
-                 mag_min = 15, mag_max = 30.5, mag_step = 0.25, SNR = False, banderr='ERR'):
+                 mag_min = 15, mag_max = 30.5, mag_step = 0.25, SNR = False, banderr='ERR',
+                 maskpath=False):
         """ Load and format appropriately the necessary data for pair-count calculations
         
         Args:
@@ -41,6 +46,7 @@ class Pairs(object):
                 idcol (str): Column name for galaxy IDs
                 racol (str): Column name for galaxy RAs
                 deccol (str): Column name for galaxy DECs
+                maskpath (str): Path to mask file for survey
           
             Cosmology Arguments:
                 cosmology (astropy.cosmology): Astropy.cosmology object
@@ -83,14 +89,16 @@ class Pairs(object):
 
         # Set the redshift range array
         self.zr = z
+        self.maskpath = maskpath
 
+        # Get the peak of P(z) for every galaxy
         self.peakz_arg = np.argmax(self._pz, axis=1)
         self.peakz = self.zr[self.peakz_arg]
 
         if z_best:
-            self.z_best = z_best
+            self._z_best = z_best
         else:
-            self.z_best = self.peakz
+            self._z_best = self.peakz
 
         # Class photometry path
         self.photometry_path = photometry
@@ -106,7 +114,6 @@ class Pairs(object):
         print("Calculating Odds properties")
         self.calcOdds(band, K=K, dz=dz, OSRlim=OSRlim, mags=mags, abzp=abzp, 
                       mag_min = mag_min, mag_max = mag_max, mag_step = mag_step)
-        
         self.oddsCut = np.array((self.odds > OSRlim))
 
         if SNR: # Apply additional SNR cut to full sample
@@ -120,23 +127,36 @@ class Pairs(object):
                 fmin = (self.phot_catalog[band] > 0.)
                 SNRcut = fmin*((self.phot_catalog[band]/self.phot_catalog[band+banderr]) > SNR)
             self.oddsCut = np.array(self.oddsCut * SNRcut)
-            
+
         self.pz = self._pz[self.oddsCut,:]
         self.mz = self._mz[self.oddsCut,:]
 
+        self.z_best = self._z_best[self.oddsCut]
+
+        # Enforce P(z) normalisation
+        factors = simps( self.pz, self.zr, axis=1)
+        for gal in range(len(self.pz)):
+            self.pz[gal,:] /= factors[gal]
+
         self.odds = self.odds[self.oddsCut]
         self.OSRmags = self.OSRmags[self.oddsCut]
+
         # Class ID, position and co-ordinate arrays
         self.IDs = np.array(self.phot_catalog[idcol],dtype=int)[self.oddsCut]
         self.RA = self.phot_catalog[racol][self.oddsCut]
         self.Dec = self.phot_catalog[deccol][self.oddsCut]
         
         # Ensure RA and Dec are in degrees
-        if self.RA.unit.physical_type == 'angle':
-            self.RA = self.RA.to(u.deg)
-            self.Dec = self.Dec.to(u.deg)
+        try:
+            if self.RA.unit.physical_type == 'angle':
+                self.RA = self.RA.to(u.deg)
+                self.Dec = self.Dec.to(u.deg)
+            else:
+                self.RA = self.RA.data * u.deg
+                self.Dec = self.Dec.data * u.deg
 
-        else:
+        except AttributeError:
+            # Need a fallback
             self.RA = self.RA.data * u.deg
             self.Dec = self.Dec.data * u.deg
 
@@ -272,6 +292,7 @@ class Pairs(object):
             Args:
                 mass_cut (float or float-array): Defines the stellar mass cut to be included
                     in the primary sample. Units of log10(stellar mass).
+                max_mass (float): Maximum stellar mass of a galaxy
                 mass_ratio (float): Ratio of stellar masses to be considered a pair.
 
         """
@@ -352,6 +373,7 @@ class Pairs(object):
         self.Nzpair = np.array( Nzpair )
         self.OSRweights_primary = np.array(pri_weights)
         self.OSRweights_secondary = np.array(sec_weights)
+        self._massRatio = mass_ratio
         # Calc the PPF
         self.calcPPF()
 
@@ -377,7 +399,6 @@ class Pairs(object):
 
         self.PPF_pairs = np.array( PPF_pairs )
         self._PPF_total = np.array( PPF_total )
-
 
     def mergerFraction(self, zmin, zmax):
         """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
@@ -462,7 +483,7 @@ class Pairs(object):
                 mag_step (float): Magnitude step-size for OSR parametrisation
         """
 
-        if self._pz.shape[0] != self.z_best.shape[0]:
+        if self._pz.shape[0] != self._z_best.shape[0]:
             print "Redshift array and P(z) cube not the same length - please check"
 
         odds = []
@@ -470,13 +491,13 @@ class Pairs(object):
 
         for gal in range(len(self._pz)):
 
-            gal_dz = K*(1.+self.z_best[gal])
+            gal_dz = K*(1.+self._z_best[gal])
             #gal_intmsk = np.logical_and(self.zr >= (self.z_best[gal]-gal_dz), 
             #                                    self.zr <= (self.z_best[gal]+gal_dz))
 
             # Interpolate only the section of self.zr,self.pz that we want to integrate
-            gal_intmsk_i = np.logical_and(zr_i >= (self.z_best[gal]-gal_dz),
-                                                zr_i <= (self.z_best[gal]+gal_dz))
+            gal_intmsk_i = np.logical_and(zr_i >= (self._z_best[gal]-gal_dz),
+                                                zr_i <= (self._z_best[gal]+gal_dz))
             gal_pz = np.interp(zr_i, self.zr, self._pz[gal,:])
             gal_int_tot = simps(gal_pz, zr_i)
             gal_int_i = np.clip(simps(gal_pz[gal_intmsk_i], zr_i[gal_intmsk_i])/ gal_int_tot, 0., 1.)
@@ -520,7 +541,7 @@ class Pairs(object):
                 OSRmag.append(goodsum/allsum)
 
         self.OSR = np.nan_to_num(OSRmag)
-        self.OSRmagbins = magbins[1:] + 0.5*np.diff(magbins)
+        self.OSRmagbins = magbins[:-1] + 0.5*np.diff(magbins)
 
     def OSRweights(self, mag_input):
         """ OSR Weight function
@@ -603,6 +624,166 @@ class Pairs(object):
         self.fm = k_sum / i_sum
         self._zrange = [zmin, zmax]
         return self.fm
+
+    def _calcArea(self, primary_index, maskimage_path=False, rmin=0*u.arcsec,
+                    rmax=15*u.arcsec, ps=0.2684*u.arcsec/u.pixel, xy=False, maskdata=False):
+
+        """ Calculate the area of each search annuli masked/unobserved to weight
+            pairs.
+
+            Args:
+
+                primary_index (int or int array): indices of galaxies one wishes to calculate an
+                    aperture for
+                maskimage_path (str): path to mask image. If already opened, pass hdu via maskdata
+                rmin (astropy unit float): inner angle search radius
+                rmax (astropy unit float): outer angle search radius
+                ps (astropy unit float): mask image pixel-scale in appropriate units
+                xy (bool): if true, supplying (x,y) coords for apertures, not an astropy.coordinate
+                    set. NOT IMPLEMENTED.
+                maskdata (fits hdu): supply a astropy.io.fits hdu object so that we do not have to 
+                    keep opening the large file.
+                
+        """
+
+        # Load in FITS image
+        if maskdata:
+            image = maskdata
+        else:
+            image = fits.open(maskimage_path)[0]
+        # Create apertures
+        if xy:
+            # NOT IMPLEMENTED YET
+            apertures = CircularAnnulus( self.coords[primary_index], r_in=rmin, r_out=rmax,)
+        else:
+            apertures = SkyCircularAnnulus( self.coords[primary_index], r_in=rmin.to(u.arcsec),
+                r_out=rmax.to(u.arcsec))
+        # Perform sum
+        photo_table = aperture_photometry(image, apertures, method='center')
+        photo_table = photo_table['aperture_sum']
+        # Calculate the fraction of area covered
+        r_min_pix = (rmin / ps)
+        r_max_pix = (rmax / ps)
+        f_area = photo_table / (np.pi*(r_max_pix.value - r_min_pix.value)**2.)
+        # f_area = np.clip(photo_table / (np.pi*(r_max_pix - r_min_pix)**2.), 0., 1.)
+
+        if np.isinf(f_area).any():
+            print 'Some f_area are inf - please check'
+
+        return np.nan_to_num(np.divide(1.,f_area))
+
+    def _areaWeights(self):
+        """ Calculate the area weights of the galaxies in the initial sample.
+
+        Args:
+            None
+
+        Requirements:
+            photutils
+        """
+
+        if not self.maskpath:
+            self.areaWeights = np.ones( (len(self.initial),len(self.zr)) )
+            print 'no mask image provided. cannot calculate area weights. assumed unity.'
+        else:
+            maskdata = fits.open(self.maskpath)[0]
+            weights = []
+            zr = np.arange(0.01, self.zr.max()+0.2, 0.2)
+
+            for zz in zr:
+                theta_z_min = (self.r_min.to(u.kpc) / self.cosmo.angular_diameter_distance(zz).to(u.kpc))*u.rad
+                theta_z_max = (self.r_max.to(u.kpc) / self.cosmo.angular_diameter_distance(zz).to(u.kpc))*u.rad
+                area = self._calcArea(self.initial,rmin=theta_z_min.to(u.arcsec),rmax=theta_z_max.to(u.arcsec),
+                            maskdata=maskdata, ps=0.2684*u.arcsec/u.pixel)
+                weights.append(area)
+
+            weights = np.array(weights)
+            self.areaWeights = griddata( zr, weights, self.zr,).T
+
+    def _calcMassCompWeights(self, mf_z, mf_params, mf_fn, massLimFn):
+        """ Calculate the weights needed to ensure that any searches for companions
+            that fall below the mass completeness are weighted appropriately. Following
+            the work of Patton et al. (2000)
+
+            Args:
+                mf_z (float array): mass function redshift bins that correspond to the
+                    parameters given in mf_params
+                mf_params (float array): mass function parameters to pass to mf_fn in order
+                    to generate the mass function  within each redshift bin
+                mf_fn (function name): function to pass *mf_params[i,:] for redshift bin i
+                massLimFn (function name): function to pass redshift z to to get the survey
+                    mass completenes limit at that redshift
+        """
+
+        bin_indices = np.ones_like(self.zr)*-99.
+        # What mass function bin does each z in self.zr correspond to?
+        for bi in range(len(mf_z)-1):
+            binl, binh = mf_z[bi], mf_z[bi+1]
+            mask = np.logical_and( self.zr >= binl, self.zr < binh)
+            bin_indices[mask] = bi
+
+        # If it equals -99, assign a weight of 1 later on.
+        if (bin_indices == -99.).any():
+            print 'WARNING - mass function redshift bins do not match self.zr. Please check.'
+
+        # log stellar mass array to act as integration x-axis
+        mass_x = np.arange(7.,14.,0.05) # need to 10*x this later
+
+        # test brute force way
+        primaryFluxInts = []
+        for i, primary in enumerate(self.initial):
+            # Get the limiting stellar mass at every z
+            m_lim = np.maximum( [self.mz[primary,:]/self._massRatio, massLimFn(self.zr)] )
+
+            primary_z = []
+            for zi, z in enumerate(self.zr):
+                # For each redshift, perform the integral
+                if self.mz[primary,zi]/self._massRatio >= massLimFn(self.zr)[zi]:
+                    primary_z.append(1.)
+                else:
+                    mask = np.logical_and(mass_x >= m_lim[zi], mass_z <= self.mz[primary,zi])
+                    mf_y = mf_fn(mass_z[mask], *mf_params[bin_indices[zi]])
+                    top = simps(mf_y, mass_x[mask])
+
+                    mask = np.logical_and(mass_x >= self.mz[primary,zi]/self._massRatio, 
+                                mass_x < self.mz[primary,zi])
+                    mf_y = mf_fn(mass_z[mask], *mf_params[bin_indices[zi]])
+                    bottom = simps(mf_y, mass_x[mask])
+
+                    primary_z.append( top/bottom )
+
+            primaryFluxInts.append(primary_z)
+
+
+        self.fluxWeights = np.array(primaryFluxInts)
+
+
+        # primaryWeights = []
+        # for i, primary in enumerate(self.initial):
+
+        #     pweight = []
+        #     for zi, z in enumerate(self.zr):
+
+        #         if bin_indices[zi] < 0.:
+        #             pweight.append(1.)
+        #         else:
+        #             zpmass = self.mz[primary]
+        #             zpmasslim = zpmass / self._massRatio
+        #             survey_masslim = massLimFn(z)
+
+        #             if survey_masslim < zpmasslim:
+        #                 # No need to integrate
+        #                 pweight.append(1.)
+        #             else:
+        #                 # Perform integral from Patton et al. (2000) - integrate GSMF from the mass 
+        #                 # ...of the primary galaxy to the survey mass limit and the
+        #                 top, _e, _info = quad(mf_fn, survey_masslim, zpmass, args=mf_params[bin_indices[zi]])
+        #                 bottom, _e, _info = quad(mf_fn, zpmasslim, zpmass, args=mf_params[bin_indices[zi]])
+        #                 # Total weighting of companion is 1/ (top/bot)
+        #                 pweight.append( np.divide(1., top/bottom ) )
+
+        #     primaryWeights.append(pweight)
+        # self.massCompWeights = np.array(primaryWeights)
 
     # SEPARATE MASKING FUNCTIONS
 
@@ -703,6 +884,7 @@ class Pairs(object):
 
         Ax.set_xlabel('Odds')
         Ax.set_ylabel('counts')
+
         Ax.text(0.05,0.9, '{0} = {1:.3f} {2}'.format(r'$\Delta z$', self._oddsK, r'$\times (1+z)$'), 
                                 transform=Ax.transAxes)
 
@@ -804,20 +986,26 @@ class Pairs(object):
                        horizontalalignment='right',verticalalignment='center',
                        transform=Ax[0].transAxes)
             
-            Ax[1].plot(self.zr,np.log10(self.mz[primary,:]),'--',lw=2,color='dodgerblue',
-                       label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary],
-                                                                   '$z_{peak}$:',
-                                                                   self.peakz[primary]))
+            # Ax[1].plot(self.zr,np.log10(self.mz[primary,:]),'--',lw=2,color='dodgerblue',
+            #            label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary],
+            #                                                        '$z_{peak}$:',
+            #                                                        self.peakz[primary]))
                                                                    
-            Ax[1].plot(self.zr,np.log10(self.mz[secondary,:]),':',lw=2,color='indianred',
-                       label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
-                                                                   '$z_{peak}$:',
-                                                                   self.peakz[secondary]))
+            # Ax[1].plot(self.zr,np.log10(self.mz[secondary,:]),':',lw=2,color='indianred',
+            #            label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
+            #                                                        '$z_{peak}$:',
+            #                                                        self.peakz[secondary]))
             
+            
+            print self.selectionMasks[primary_index][j]
             selmask = np.invert(self.selectionMasks[primary_index][j])
+            print selmask
             zr_mask = np.ma.masked_where(selmask, self.zr)
             mz1 = np.ma.masked_where(selmask, np.log10(self.mz[primary,:]) )
             mz2 = np.ma.masked_where(selmask, np.log10(self.mz[secondary,:]) )
+
+            print 'mz1', mz1.shape, 'mz2', mz2.shape, 'zr_mask', zr_mask.shape
+            print zr_mask
 
             Ax[1].plot(zr_mask, mz1, '--', lw=5,color='dodgerblue',
                        label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary],
@@ -832,7 +1020,7 @@ class Pairs(object):
 
             Ax[1].set_xlabel('Redshift, z')
             Ax[1].set_ylabel(r'$\log_{10} \rm{M}_{\star}$')
-            Ax[1].set_ylim(6.5,11.5)
+            Ax[1].set_ylim(6.5,12.5)
             Fig.subplots_adjust(left=0.15,right=0.95,top=0.95,bottom=0.1,hspace=0.25)
             plt.show()
 
@@ -842,31 +1030,46 @@ class Pairs(object):
         secondaries = self.initial_pairs[primary_index]
         
         for j, secondary in enumerate(secondaries):
-            Fig, Ax = plt.subplots(2,figsize=(6,9))
+            Fig, Ax = plt.subplots(1,figsize=(4.*golden,4.))
             # Plot the primary P(z)
-            Ax[0].plot(self.zr,cumtrapz(self.pz[primary,:], self.zr, initial=0),'--',lw=2,color='b',
+            # Ax.plot(self.zr,cumtrapz(self.pz[primary,:], self.zr, initial=0),'--',lw=2,color='b',
+            #             label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary_index],
+            #                                                        '$z_{peak}$:',
+            #                                                        self.peakz[primary_index]))
+            # # Plot the secondary P(z)
+            # Ax.plot(self.zr,cumtrapz(self.pz[secondary,:], self.zr, initial=0),':',lw=2,color='r',
+            #             label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
+            #                                                        '$z_{peak}$:',
+            #                                                        self.peakz[secondary]))
+            # # Plot the Z function
+            # Ax.plot(self.zr,cumtrapz(self.redshiftProbs[primary_index][j], self.zr, initial=0), '--k', lw=2.5)
+
+            Ax.plot(self.zr,self.pz[primary,:]/self.pz[primary,:].max(),'--',lw=2,color='b',
                         label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[primary_index],
                                                                    '$z_{peak}$:',
                                                                    self.peakz[primary_index]))
             # Plot the secondary P(z)
-            Ax[0].plot(self.zr,cumtrapz(self.pz[secondary,:], self.zr, initial=0),':',lw=2,color='r',
+            Ax.plot(self.zr,self.pz[secondary,:]/self.pz[secondary,:].max(),':',lw=2,color='r',
                         label = r'ID: {0:.0f} {1:s} {2:.2f}'.format(self.IDs[secondary],
                                                                    '$z_{peak}$:',
                                                                    self.peakz[secondary]))
             # Plot the Z function
-            Ax[0].plot(self.zr,cumtrapz(self.redshiftProbs[primary_index][j], self.zr, initial=0), '--k', lw=2.5)
+            Ax.plot(self.zr,cumtrapz(self.redshiftProbs[primary_index][j], self.zr, initial=0), '-w', lw=3)
+            Ax.plot(self.zr,cumtrapz(self.redshiftProbs[primary_index][j], self.zr, initial=0), '-k', lw=2)
+
             # Legend
             if legend:
-                Leg1 = Ax[0].legend(loc='upper right', prop={'size':8})
+                Leg1 = Ax.legend(loc='upper right', prop={'size':8,},)
                 Leg1.draw_frame(draw_frame)
             # Labels, limits
-            Ax[0].set_xlabel('Redshift, z')
-            Ax[0].set_ylabel(r'$\int P(z)$')
-            Ax[0].set_xlim(0,2), Ax[0].set_ylim(0,1.1)
+            Ax.set_xlabel('Redshift, z')
+            Ax.set_ylabel(r'$P(z)$')
+            # Ax.set_ylabel(r'$\int P(z)$')
+            Ax.set_xlim(0,3.5), Ax.set_ylim(0,1.1)
             # Plot the Number of pairs
-            Ax[0].text(0.75,0.1, r'{0:s} {1:.3f}'.format('$\mathcal{N}_{z} =$ ', self.Nzpair[primary_index][j]), transform=Ax[0].transAxes)
+            Ax.text(0.75,0.1, r'{0:s} {1:.3f}'.format('$\mathcal{N}_{z} =$ ', self.Nzpair[primary_index][j]), transform=Ax.transAxes)
             
-            Fig.subplots_adjust(right=0.95,top=0.95,bottom=0.14)
+            Fig.subplots_adjust(left=0.10,right=0.95,top=0.95,bottom=0.13)
         
         plt.show()
 
