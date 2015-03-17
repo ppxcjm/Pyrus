@@ -700,7 +700,7 @@ class Pairs(object):
             weights = np.array(weights)
             self.areaWeights = griddata( zr, weights, self.zr,).T
 
-    def _calcMassCompWeights(self, mf_z, mf_params, mf_fn, massLimFn):
+    def _calcMassCompWeights(self, mf_z, mf_params, mf_fn):
         """ Calculate the weights needed to ensure that any searches for companions
             that fall below the mass completeness are weighted appropriately. Following
             the work of Patton et al. (2000)
@@ -711,8 +711,6 @@ class Pairs(object):
                 mf_params (float array): mass function parameters to pass to mf_fn in order
                     to generate the mass function  within each redshift bin
                 mf_fn (function name): function to pass *mf_params[i,:] for redshift bin i
-                massLimFn (function name): function to pass redshift z to to get the survey
-                    mass completenes limit at that redshift
         """
 
         bin_indices = np.ones_like(self.zr)*-99.
@@ -733,12 +731,12 @@ class Pairs(object):
         primaryFluxInts = []
         for i, primary in enumerate(self.initial):
             # Get the limiting stellar mass at every z
-            m_lim = np.maximum( [self.mz[primary,:]/self._massRatio, massLimFn(self.zr)] )
+            m_lim = np.maximum( [self.mz[primary,:]/self._massRatio, self._massCompleteness(self.zr)] )
 
             primary_z = []
             for zi, z in enumerate(self.zr):
                 # For each redshift, perform the integral
-                if self.mz[primary,zi]/self._massRatio >= massLimFn(self.zr)[zi]:
+                if self.mz[primary,zi]/self._massRatio >= self._massCompleteness(self.zr)[zi]:
                     primary_z.append(1.)
                 else:
                     mask = np.logical_and(mass_x >= m_lim[zi], mass_z <= self.mz[primary,zi])
@@ -756,8 +754,47 @@ class Pairs(object):
 
 
         self.fluxWeights = np.array(primaryFluxInts)
+        
+        def setMassCompleteness(self, redshift, magnitude, magLim):
+            """ Set up mass completeness function parameters
+            
+            Reads in magnitude for 1Msol normalised magnitude for
+            desired M/L ratio for completeness calculations and sets up the
+            appropriate variables.
+            
+            Args:
+                redshift (array): Redshift array for which magnitudes have been
+                    calculated
+                magnitude (array): Corresponding magnitudes for the chosen M/L
+                magLim (float): Magnitude completeness limit for the field
+            
+            """
+            self._comp_zr = np.array(redshift)
+            self._comp_magnitude = np.array(magnitude)
+            self.magLim = float(magLim)
 
+        def _massCompleteness(self, redshifts):
+            """ Calculate Mass completeness limits 
+            
+                Args:
+                    redshifts (array): Redshift array to calculate mass
+                        completeness for.
+                        
+                Returns:
+                    mass_limit (array): Mass completeness limit for the set magnitude
+                        limit and M/L curve (set with setMassCompleteness).
+                        
+                        Manually changing self.magLim will change the calculated
+                        mass completeness correspondingly, without the need to 
+                        redefine the completeness curve seperately.
+            
+            """
+            mass_limit = griddata(self._comp_zr, 
+                                  0.4*(self._comp_magnitude - self.magLim),
+                                  redshifts)
 
+            return 10**mass_limit
+            
         # primaryWeights = []
         # for i, primary in enumerate(self.initial):
 
