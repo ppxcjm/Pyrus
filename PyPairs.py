@@ -7,7 +7,7 @@ from astropy.coordinates import SkyCoord, Angle
 from astropy.table import Table
 from astropy.io import fits
 from astropy.cosmology import FlatLambdaCDM
-from astropy.utils import ProgressBar
+from astropy.utils.console import ProgressBar
 # Scipy
 from scipy.spatial import cKDTree
 from scipy.integrate import simps, trapz, cumtrapz, quad
@@ -1372,30 +1372,30 @@ class MockPairs(object):
         self.exact_pairs = []
         self.exact_pairs_sum = []
         # Remove both self-matches and matches below min separation
-        for i, primary in enumerate(sample):
-            if i % 100 == 0:
-                print i
-                
-            if initial_pairs[i]:
-            # Sort so it matches brute force output
-                initial_pairs[i] = np.sort(initial_pairs[i])
+        with ProgressBar(len(sample)) as bar:
+            print('Finding initial pairs:')
+            for i, primary in enumerate(sample):
+                if initial_pairs[i]:
+                # Sort so it matches brute force output
+                    initial_pairs[i] = np.sort(initial_pairs[i])
 
-                z_sep = np.abs(z_mr[primary] - z_mr[initial_pairs[i]]) / (1 + z_mr[primary])
-                r_sep = coords[primary].separation(coords[initial_pairs[i]]).to(u.rad).value
-                pair = np.logical_and(r_sep >= min_exact[i].value,r_sep <= max_exact[i].value)
-                pair *= np.logical_and(z_sep < 0.0017, 
-                                       np.abs(masses[primary] - masses[initial_pairs[i]]) < np.log10(ratio))
+                    z_sep = np.abs(z_mr[primary] - z_mr[initial_pairs[i]]) / (1 + z_mr[primary])
+                    r_sep = coords[primary].separation(coords[initial_pairs[i]]).to(u.rad).value
+                    pair = np.logical_and(r_sep >= min_exact[i].value,r_sep <= max_exact[i].value)
+                    pair *= np.logical_and(z_sep < 0.0017, 
+                                           np.abs(masses[primary] - masses[initial_pairs[i]]) < np.log10(ratio))
 
-                # if sum(pair) > 0:
-                #     print i
-                #     print r_sep, min_exact[i].value, max_exact[i].value
-                #     print z_sep,
-                #     print (len(initial_pairs[i][pair]))
+                    # if sum(pair) > 0:
+                    #     print i
+                    #     print r_sep, min_exact[i].value, max_exact[i].value
+                    #     print z_sep,
+                    #     print (len(initial_pairs[i][pair]))
 
-                if sum(pair):
-                    self.exact_pairs.append(initial_pairs[i][pair])
-                    self.exact_pairs_sum.append(len(initial_pairs[i][pair]))
-                    self.trimmed.append(primary)
+                    if sum(pair):
+                        self.exact_pairs.append(initial_pairs[i][pair])
+                        self.exact_pairs_sum.append(len(initial_pairs[i][pair]))
+                        self.trimmed.append(primary)
+                bar.update()
             # Delete self-matches and matches within minsep
         # Trim pairs
         self.trimmed_pairs = np.array(np.copy(self.exact_pairs),dtype='object')
@@ -1403,33 +1403,37 @@ class MockPairs(object):
         
         Nduplicates = 0
 
-        for i, primary in enumerate(self.trimmed):
-            for j, secondary in enumerate(self.exact_pairs[i]):
-                if secondary in self.trimmed:
+        with ProgressBar(len(self.trimmed)) as bar:
+            print('Removing duplicate pairs:')
+            for i, primary in enumerate(self.trimmed):
+                for j, secondary in enumerate(self.exact_pairs[i]):
+                    if secondary in self.trimmed:
                     
-                    Nduplicates += 1 # Counter to check if number seems sensible
+                        Nduplicates += 1 # Counter to check if number seems sensible
 
-                    primary_mass = masses[primary]
-                    secondary_mass = masses[secondary]
+                        primary_mass = masses[primary]
+                        secondary_mass = masses[secondary]
                     
-                    if secondary_mass > primary_mass:
-                        try:
-                            self.trimmed_pairs[i] = np.delete(self.exact_pairs[i], j)
-                            #self.trimmed_pairs[i] = np.array([None])
-                        except:
-                            self.trimmed_pairs = np.delete(self.trimmed_pairs, i)
-                            self.trimmed = np.delete(self.trimmed, i)
-                    else:
-                        try:
-                            k = np.where(self.trimmed == secondary)[0][0]
-                            print k
-                            index = np.where(self.exact_pairs[k] == primary)[0][0]
-                            print index
-                            self.trimmed_pairs[k] = np.delete(self.exact_pairs[k], index)
-                        except:
-                            k = np.where(self.trimmed == secondary)[0]
-                            print k
-                            self.trimmed_pairs = np.delete(self.trimmed_pairs,k)
+                        if secondary_mass > primary_mass:
+                            try:
+                                self.trimmed_pairs[i] = np.delete(self.exact_pairs[i], j)
+                                #self.trimmed_pairs[i] = np.array([None])
+                            except:
+                                self.trimmed_pairs = np.delete(self.trimmed_pairs, i)
+                                self.trimmed = np.delete(self.trimmed, i)
+                        else:
+                            try:
+                                k = np.where(self.trimmed == secondary)[0][0]
+                                print k
+                                index = np.where(self.exact_pairs[k] == primary)[0][0]
+                                print index
+                                self.trimmed_pairs[k] = np.delete(self.exact_pairs[k], index)
+                            except:
+                                k = np.where(self.trimmed == secondary)[0]
+                                print k
+                                self.trimmed_pairs = np.delete(self.trimmed_pairs,k)
+                                
+                bar.update()
 
         self.Npairs = np.array([len(self.trimmed_pairs[gal]) for gal in range(len(self.trimmed))])
         self.Npairs_total = np.sum(self.Npairs)
