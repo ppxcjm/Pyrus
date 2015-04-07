@@ -1,2 +1,4 @@
 uvista-smallsample/
+uvista-small/
 testing-pairs.py
+*.pyc
