@@ -28,7 +28,7 @@ class Pairs(object):
     def __init__(self, z, redshift_cube, mass_cube, band, z_best=False, 
                  photometry=False, catalog_format = 'fits',
                  idcol = 'ID', racol = 'RA', deccol = 'DEC', cosmology = False,
-                 K = 0.05, dz = 0.01, OSRlim = 0.3, mags=True, abzp = False,
+                 K = 0.06, dz = 0.01, OSRlim = 0.3, mags=True, abzp = False,
                  mag_min = 15, mag_max = 30.5, mag_step = 0.25, SNR = False, banderr='ERR',
                  maskpath=False):
         """ Load and format appropriately the necessary data for pair-count calculations
@@ -76,6 +76,9 @@ class Pairs(object):
                 use and access
         
         """
+
+        print redshift_cube.shape, mass_cube.shape
+
         # Cube containing the P(z) for each galaxy
         redshift_cube = np.array(redshift_cube)
         # Cube containing the M*(z) for each galaxy
@@ -95,11 +98,6 @@ class Pairs(object):
         self.peakz_arg = np.argmax(self._pz, axis=1)
         self.peakz = self.zr[self.peakz_arg]
 
-        if z_best:
-            self._z_best = z_best
-        else:
-            self._z_best = self.peakz
-
         # Class photometry path
         self.photometry_path = photometry
 
@@ -109,6 +107,10 @@ class Pairs(object):
         except:
             print("Cannot read photometry catalogue - please check")
 
+        if z_best:
+            self._z_best = self.phot_catalog[z_best]
+        else:
+            self._z_best = self.peakz
 
         # Calculate Odds properties and make relevant masks
         print("Calculating Odds properties")
@@ -896,10 +898,10 @@ class Pairs(object):
         Fig = plt.figure(figsize=(6,6.5))
         Ax = Fig.add_subplot(111)
 
+        Ax.plot( self.RA, self.Dec, 'ok', ms=3, alpha=0.7)
         for gal in np.array(galaxy_indices,ndmin=1):
             Ax.plot( self.RA[gal], self.Dec[gal], 'ow', mec='r', mew=2, ms=10)
 
-        Ax.plot( self.RA, self.Dec, 'ok', ms=5)
 
         Ax.set_ylabel('Dec')
         Ax.set_xlabel('RA')
