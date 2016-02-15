@@ -1,4 +1,4 @@
-import time
+import time, os
 # Matplotlib, numpy
 import matplotlib.pyplot as plt, numpy as np
 # Astropy
@@ -29,9 +29,10 @@ class Pairs(object):
     def __init__(self, z, redshift_cube, mass_cube, band, z_best=False, 
                  photometry=False, catalog_format = 'fits',
                  idcol = 'ID', racol = 'RA', deccol = 'DEC', cosmology = False,
-                 K = 0.06, dz = 0.01, OSRlim = 0.3, mags=True, abzp = False,
+                 K = 0.05, dz = 0.01, OSRlim = 0.3, mags=True, abzp = False,
                  mag_min = 15, mag_max = 30.5, mag_step = 0.25, SNR = False, banderr='ERR',
-                 maskpath=False):
+                 maskpath=False,
+                 forcepznorm=True):
         """ Load and format appropriately the necessary data for pair-count calculations
         
         Args:
@@ -77,9 +78,6 @@ class Pairs(object):
                 use and access
         
         """
-
-        print redshift_cube.shape, mass_cube.shape
-
         # Cube containing the P(z) for each galaxy
         redshift_cube = np.array(redshift_cube)
         # Cube containing the M*(z) for each galaxy
@@ -95,9 +93,17 @@ class Pairs(object):
         self.zr = z
         self.maskpath = maskpath
 
+        self._massCompInMags = False #edited by carl
+        self._forcePzNorm = forcepznorm
+
         # Get the peak of P(z) for every galaxy
         self.peakz_arg = np.argmax(self._pz, axis=1)
         self.peakz = self.zr[self.peakz_arg]
+
+        if z_best:
+            self._z_best = z_best
+        else:
+            self._z_best = self.peakz
 
         # Class photometry path
         self.photometry_path = photometry
@@ -108,10 +114,6 @@ class Pairs(object):
         except:
             print("Cannot read photometry catalogue - please check")
 
-        if z_best:
-            self._z_best = self.phot_catalog[z_best]
-        else:
-            self._z_best = self.peakz
 
         # Calculate Odds properties and make relevant masks
         print("Calculating Odds properties")
@@ -137,9 +139,10 @@ class Pairs(object):
         self.z_best = self._z_best[self.oddsCut]
 
         # Enforce P(z) normalisation
-        factors = simps( self.pz, self.zr, axis=1)
-        for gal in range(len(self.pz)):
-            self.pz[gal,:] /= factors[gal]
+        if self._forcePzNorm:
+            factors = simps( self.pz, self.zr, axis=1)
+            for gal in range(len(self.pz)):
+                self.pz[gal,:] /= factors[gal]
 
         self.odds = self.odds[self.oddsCut]
         self.OSRmags = self.OSRmags[self.oddsCut]
@@ -264,7 +267,13 @@ class Pairs(object):
         self.trimmed_pairs = np.copy(self.initial_pairs)
         Nduplicates = 0
 
+        # We are deleting records from the secondary pairss but then we are not reading
+        # this new deleted row in afterwards
+
+        # Note down the secondaries we need to 
+
         for i, primary in enumerate(self.initial):
+
             for j, secondary in enumerate(self.initial_pairs[i]):
                 if secondary in self.initial:
                     
@@ -272,14 +281,31 @@ class Pairs(object):
 
                     primary_mass = self.mz[primary, self.peakz_arg[primary]]
                     secondary_mass = self.mz[secondary, self.peakz_arg[secondary]]
+
+                    print self.IDs[primary], primary, self.IDs[secondary], secondary
+                    print np.log10(primary_mass), np.log10(secondary_mass)
+                    
+                    print 'primary pairs before', self.trimmed_pairs[i]
                     
                     if secondary_mass > primary_mass:
+                        print 'secondary > primary'
                         self.trimmed_pairs[i] = np.delete(self.initial_pairs[i], j)
                     else:
+                        print 'primary > secondary'
+
                         k = np.where(self.initial == secondary)[0][0]
+
+                        print 'secondary pairs before', self.trimmed_pairs[k]
+
                         index = np.where(self.initial_pairs[k] == primary)[0][0]
                         self.trimmed_pairs[k] = np.delete(self.initial_pairs[k],
                                                           index)
+
+                        print 'secondary pairs after', self.trimmed_pairs[k]
+                        print 'deleted secondary: k', k, 'index', index
+
+                    print 'primary pairs after', self.trimmed_pairs[i]
+                print 
 
         Ntotal = np.sum([len(self.trimmed_pairs[gal]) for gal in range(len(self.initial))])
             
@@ -324,7 +350,8 @@ class Pairs(object):
                 Zz_arrays, Zpair_fracs = [], []
                 sep_arrays, sel_arrays = [], []
 
-                primary_pz /= simps(primary_pz, self.zr)
+                if self._forcePzNorm:
+                    primary_pz /= simps(primary_pz, self.zr)
 
                 # Get angular distances of all companions
                 d2d = self.coords[primary].separation(self.coords[self.trimmed_pairs[i]]).to(u.rad)
@@ -345,7 +372,8 @@ class Pairs(object):
                     # Redshift probability
                     # -----------------------------------------
                     secondary_pz = self.pz[ secondary, :]
-                    secondary_pz /= simps(secondary_pz, self.zr)
+                    if self._forcePzNorm:
+                        secondary_pz /= simps(secondary_pz, self.zr)
                 
                     Nz = (primary_pz + secondary_pz) * 0.5
                     Zz = np.nan_to_num((primary_pz * secondary_pz) / Nz)
@@ -410,7 +438,7 @@ class Pairs(object):
         self.PPF_pairs = np.array( PPF_pairs )
         self._PPF_total = np.array( PPF_total )
 
-    def mergerFraction(self, zmin, zmax):
+    def mergerFraction(self, zmin, zmax, getPairCoords=False, Npair_lim = 0.01):
         """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
             
             Args:
@@ -422,16 +450,19 @@ class Pairs(object):
                                    self.selectionMasks, self.PPF_pairs, 
                                    self.OSRweights_primary,
                                    self.OSRweights_secondary, self.areaWeights,
-                                   self.fluxWeights) # Add pair weights when done
+                                   self.fluxWeights,
+                                   getPairCoords, Npair_lim) # Add pair weights when done
         self.fm = fm
         self._k_sum = k_sum
         self._i_sum = i_sum
         self._zrange = [zmin, zmax]
+
         return self.fm
 
     def mergerIntegrator(self, zmin, zmax, initial, trimmed_pairs,
                          selectionMasks, PPF_pairs, OSR_primary,
-                         OSR_secondary, areaWeight, fluxWeight):
+                         OSR_secondary, areaWeight, fluxWeight,
+                         getPairCoords=False, Npair_lim=0.01):
         """ Function to integrate the total merger fraction.
         
             Generalised to receive any set of inputs rather than stored
@@ -451,12 +482,15 @@ class Pairs(object):
 
         """
 
+        self.extracted = []
+
         # Redshift mask we want to examine
         zmask = np.logical_and(self.zr >= zmin, self.zr <= zmax)
 
         # Integrate over pairs
         k_sum = 0.
         i_sum = 0.
+        inf_c = 0
         k_int = PPF_pairs # * self.pairWeights
         self.nan_rec = []
         for i, primary in enumerate(initial):
@@ -468,17 +502,177 @@ class Pairs(object):
                     if np.isnan(temp):
                         self.nan_rec.append([i, j])
                     else:
-                        k_sum += temp
+                        if np.isfinite(temp):
+                            k_sum += temp
+
+                            # Let's get their coordinates and ids
+                            if getPairCoords and (temp >= Npair_lim):
+                                # row = [self.IDs[primary], self.IDs[secondary], 
+                                #             self.RA[primary].to(u.degree).value, 
+                                #             self.Dec[primary].to(u.degree).value,
+                                #             self.RA[secondary].to(u.degree).value,
+                                #             self.Dec[secondary].to(u.degree).value,
+                                #             temp]
+                                row = [primary, secondary, temp]
+                                self.extracted.append(row)
+                        else:
+                            inf_c += 1
+
                         #print temp
             # Integrate over the primary galaxies
             # Re-enforce Pz normalisation
-            i_pz = self.pz[primary] / simps(self.pz[primary], self.zr)
+            i_pz = self.pz[primary]
+            if self._forcePzNorm:
+                i_pz /= simps(self.pz[primary], self.zr)
             i_int = i_pz * selectionMasks[i] * OSR_primary[i]
             i_sum += simps( i_int[zmask], self.zr[zmask])
 
+        # print 'inf_c', inf_c
+
+        # Set extracted to an array
+        self.extracted = np.array(self.extracted)
+
         # Set the merger fraction
-        fm = k_sum / i_sum
+        mask = np.isfinite(k_sum)*np.isfinite(i_sum)
+        fm = k_sum[mask] / i_sum[mask]
         return fm, k_sum, i_sum
+
+    def genCutOuts(self, imagepath, outpath = './', Npair_lim = 0.01, cutoutsize = 25*u.arcsec,
+                    imghduid = 0, outprefix = 'stamp', z_mean = False):
+        """ Generate cutouts of potential pairs based on a cut in the integral of 
+            the weighted PPF.
+
+            Args:
+                imagepath (str): path to the image used for cutouts.
+                outpath (str): path to directory in which figures will be saved.
+                Npair_lim (float): limit of integrated PPF above which to select mergers.
+                cutoutsize (astropy quantity): side length of cutout
+                imghduid (int): item in the FITS HDU list corresponding to the image data
+                outprefix (str): prefix of output file name
+        """
+
+        # Import the astropy quantities we need
+        from astropy.wcs.utils import proj_plane_pixel_scales
+        from astropy.wcs import WCS
+        # Search for aplpy library
+        try:
+            import aplpy
+        except:
+            print 'Cannot generate cutouts! Need the aplpy python module.'
+            return False
+        # Check to see if p.extracted has been created
+        try:
+            if len(self.extracted) == 0:
+                print 'No pairs extracted from pair analysis. No cutouts to generate.'
+                return False
+        except:
+            print 'Merger integrator function has not been called. No pairs to cutout.'
+            return False
+
+        # Open the image
+        if not os.path.isfile(imagepath):
+            print 'Image path does not exist.'
+            return False
+
+        # Open the FITS file
+        hdulist = fits.open(imagepath, memmap=True)
+        # Grab the WCS information from the image
+        imgwcs = WCS(hdulist[imghduid].header)
+        # Calculate the approximate pixel scale in arcseconds per pixel
+        ps = (np.mean(proj_plane_pixel_scales(imgwcs))*u.degree).to(u.arcsec)
+        # Calculate the approximate number of pixels to add either side of cutout centre
+        cutout_add = ((cutoutsize / ps)/2.).value
+
+        # Perform the cut on p.extracted
+        exmask = (self.extracted[:,2] >= Npair_lim)
+        print 'Mask excludes {0} of {1} mergers for cutout generations...'.format(
+            np.invert(exmask).sum(), len(self.extracted))
+        # Check for remaining pairs
+        if np.array(exmask).sum() == 0:
+            print 'No pairs survived Npair_lim cut.'
+            return True
+        self._extracted = self.extracted[exmask,:]
+
+        # Convert the (ra,dec) to (x,y) in the provided image
+        primary = np.array(self._extracted[:,0], dtype=int)
+        secondary = np.array(self._extracted[:,1], dtype=int)
+
+        skypos = SkyCoord(self.RA[primary].to(u.degree).value, 
+                            self.Dec[primary].to(u.degree).value,
+                            unit = u.degree)
+        yxpos = np.array(imgwcs.wcs_world2pix(skypos.ra.degree, skypos.dec.degree, 1))
+
+        # Go through the images now and generate the figures
+        for i in range(len(self._extracted)):
+            # Get the x and y coords
+            gy, gx = yxpos[:,i]
+            # Select the cutout data
+            gdata = hdulist[imghduid].data[(gx-cutout_add):(gx+cutout_add), 
+                                (gy-cutout_add):(gy+cutout_add)]
+            # Update the header
+            newheader = hdulist[imghduid].header.copy()
+            newheader['CRPIX1'], newheader['CRPIX2'] = cutout_add+1., cutout_add+1.
+            newheader['CRVAL1'], newheader['CRVAL2'] = skypos[i].ra.degree, skypos[i].dec.degree
+            # Create a new FITS file, preserving the new header information
+            ghdulist = fits.HDUList([fits.PrimaryHDU(gdata, header=newheader)])
+            # Save it the specified directory
+            outname = outpath+outprefix+'_{0}_{1:.0f}_{2:.0f}'.format(i, 
+                self.IDs[primary[i]], self.IDs[secondary[i]])
+            ghdulist.writeto(outname+'.fits', clobber=True)
+
+            # Open it again
+            fig = aplpy.FITSFigure(outname+'.fits')
+            fig.show_grayscale()
+            # Draw search radius around the primary galaxy
+            if z_mean:
+                searchr = (self.r_max.to(u.kpc) / self.cosmo.angular_diameter_distance(z_mean).to(u.kpc))*u.rad
+                fig.show_circles(skypos[i].ra.degree, skypos[i].dec.degree,
+                    searchr.to(u.degree).value, linewidth=3, color='black')
+            # X marks the spot
+            fig.show_markers(skypos[i].ra.degree, skypos[i].dec.degree, 
+                marker='x', c='red', s=40)
+            # Plot circle around the primary galaxy
+            fig.show_circles(skypos[i].ra.degree, skypos[i].dec.degree,
+                (1.*u.arcsec).to(u.degree).value, linewidth=3, color='red')
+            # Plot circle around the secondary galaxy
+            fig.show_circles(self.RA[secondary[i]].to(u.degree).value, 
+                self.Dec[secondary[i]].to(u.degree).value, 
+                (1.*u.arcsec).to(u.degree).value, linewidth=3, color='blue')
+            # Add label to the primary galaxy
+            fig.add_label(skypos[i].ra.degree, skypos[i].dec.degree-(2.*u.arcsec.to(u.degree)),
+                '{0:.0f}'.format(self.IDs[primary[i]]),
+                color = 'red', weight = 400, size = 16)
+            # Add label to the secondary
+            fig.add_label(self.RA[secondary[i]].to(u.degree).value, 
+                self.Dec[secondary[i]].to(u.degree).value-(2.5*u.arcsec.to(u.degree)), 
+                '{0:.0f}'.format(self.IDs[secondary[i]]),
+                color = 'blue', weight = 400, size = 16)
+            # Add additional information to the image
+            pra = skypos[i].ra.degree-(cutoutsize/2.2).to(u.degree).value
+            pdec = skypos[i].dec.degree-(cutoutsize/2.2).to(u.degree).value
+
+            if z_mean:
+                m1 = self.mz[primary[i], np.argmin(abs(z_mean - self.zr))]
+                m2 = self.mz[secondary[i], np.argmin(abs(z_mean - self.zr))]
+            else:
+                m1 = self.mz[primary[i], np.argmin(abs(self._z_best[primary[i]] - self.zr))]
+                m2 = self.mz[secondary[i], np.argmin(abs(self._z_best[secondary[i]] - self.zr))]
+
+            fig.add_label(pra, pdec,
+                r'$\int{\ \mathrm{PPF}(z)} =$'+'{0:1.3f}{1}'.format(self._extracted[i,2], '\n') +
+                r'$\alpha_{1} = $' + '{0:1.3f} {1}'.format(self.RA[primary[i]].value, '\n') + 
+                r'$\delta_{1} = $' + '{0:1.3f} {1}'.format(self.Dec[primary[i]].value, '\n') + 
+                r'$\mathcal{M}_{1}^{*} =$' + '{0:1.2f} {1}'.format(np.log10(m1), '\n') + 
+                r'$\mathcal{M}_{2}^{*} =$' + '{0:1.2f} {1}'.format(np.log10(m2), '\n'),
+                color = 'green', weight=300, size=16, horizontalalignment='right',
+                verticalalignment='bottom')
+            # Save the figure
+            fig.set_theme('publication')
+            fig.save(outname+'.pdf')
+            # Delete the FITS file
+            os.remove(outname+'.fits')
+
+        return True
         
     def calcOdds(self, band, K=0.1, dz=0.01, OSRlim=0.3, mags=True, abzp=False,
                  mag_min = 15, mag_max = 30.5, mag_step = 0.25):
@@ -642,11 +836,16 @@ class Pairs(object):
         for i, primary in enumerate(self.initial):
             if self.PPF_pairs[i]: # Some are empty
                 for j, secondary in enumerate(self.trimmed_pairs[i]):
-                    k_sum += np.sum( simps( k_int[i][j][zmask], self.zr[zmask], ) )
+                    kintegral = np.sum( simps( k_int[i][j][zmask], self.zr[zmask], ) )
+                    if np.isfinite(kintegral):
+                        k_sum += kintegral
     
         # Integrate over the primary galaxies
+        # Edited by Carl to remove inf/nan objects
         i_int = self.pz[ self.initial ] * self.selectionMasks # * galaxyweights
-        i_sum = np.sum( simps( i_int[:,zmask], self.zr[zmask], axis = 1) )
+        i_simps = simps( i_int[:,zmask], self.zr[zmask], axis = 1)
+        i_mask = np.isfinite(i_simps)
+        i_sum = np.sum( i_simps[i_mask] )
     
         # Set the merger fraction
         self.fm = k_sum / i_sum
@@ -679,7 +878,7 @@ class Pairs(object):
             image = maskdata
             image_norm = normdata
         else:
-            image = fits.open(maskimage_path,memmap=True)[0]
+            image = fits.open(maskimage_path, memmap=True)[0]
         # Create apertures
         if xy:
             # NOT IMPLEMENTED YET
@@ -690,11 +889,16 @@ class Pairs(object):
             norm_ap = SkyCircularAnnulus( self.coords[primary_index][0], r_in=rmin.to(u.arcsec),
                                             r_out=rmax.to(u.arcsec))
         # Perform sum
-        photo_table = aperture_photometry(image, apertures, method='center')
+
+        photo_table = aperture_photometry(image, apertures, method='center',) # Added unit
         photo_table = photo_table['aperture_sum']
 
-        photo_table2 = aperture_photometry(image_norm, norm_ap, method='center')
+        del image
+
+        photo_table2 = aperture_photometry(image_norm, norm_ap, method='center',) # Added unit
         photo_table2 = photo_table2['aperture_sum']
+
+        del image_norm
         # Calculate the fraction of area covered
         #r_min_pix = (rmin / ps)
         #r_max_pix = (rmax / ps)
@@ -729,7 +933,7 @@ class Pairs(object):
             zr[0] = 0.1
 
             for zz in zr:
-                print zz
+                # print zz
                 theta_z_min = (self.r_min.to(u.kpc) / self.cosmo.angular_diameter_distance(zz).to(u.kpc))*u.rad
                 theta_z_max = (self.r_max.to(u.kpc) / self.cosmo.angular_diameter_distance(zz).to(u.kpc))*u.rad
                 area = self._calcArea(self.initial, rmin=theta_z_min.to(u.arcsec), rmax=theta_z_max.to(u.arcsec),
@@ -761,8 +965,9 @@ class Pairs(object):
         # What mass function bin does each z in self.zr correspond to?
         bin_indices = np.ones_like(self.zr, dtype='int')*-99
         for i, z in enumerate(self.zr):
-            binarg = np.argmin(np.abs(mf_z - z))
+            binarg = np.argmin(np.abs(mf_z[:-1] - z))
             bin_indices[i] = int(binarg)
+
 
         # If it equals -99, assign a weight of 1 later on.
         if (bin_indices == -99.).any():
@@ -782,7 +987,7 @@ class Pairs(object):
                 primary_z = []
                 for zi, z in enumerate(self.zr):
                     # For each redshift, perform the integral
-                    if (self.mz[primary,zi]/self.massRatio) >= self._massCompleteness(self.zr)[zi]:
+                    if ((self.mz[primary,zi]/self.massRatio) >= self._massCompleteness(self.zr)[zi]):
                         primary_z.append(1.)
                     else:
                         mask_1 = np.logical_and(mass_z >= m_lim[zi], mass_z <= self.mz[primary,zi])
@@ -819,7 +1024,7 @@ class Pairs(object):
                                      np.exp(-10**(mass_array - Mchar)))
         return phi_m
 
-    def setMassCompleteness(self, redshift, magnitude, magLim):
+    def setMassCompleteness(self, redshift, magnitude, magLim, mags=True):
         """ Set up mass completeness function parameters
 
         Reads in magnitude for 1Msol normalised magnitude for
@@ -833,6 +1038,7 @@ class Pairs(object):
             magLim (float): Magnitude completeness limit for the field
 
         """
+        self._massCompInMags = mags
         self._comp_zr = np.array(redshift)
         self._comp_magnitude = np.array(magnitude)
         self.magLim = float(magLim)
@@ -853,12 +1059,21 @@ class Pairs(object):
                     redefine the completeness curve seperately.
 
         """
+
         try:
-            mass_limit = 10**(griddata(self._comp_zr, 
-                                       0.4*(self._comp_magnitude - self.magLim),
-                                       redshifts))
+            if self._massCompInMags is True:
+                mass_limit = 10**(griddata(self._comp_zr, 
+                                           0.4*(self._comp_magnitude - self.magLim),
+                                           redshifts))
+            else:
+                mass_limit = 10**(griddata(self._comp_zr,
+                                            self._comp_magnitude,
+                                            redshifts))
         except AttributeError:
-            mass_limit = 1e-10
+            if isinstance(redshifts, (np.ndarray, list)):
+                mass_limit = [1e-10]*len(redshifts)
+            else:
+                mass_limit = 1e-10
             # If 'setMassCompleteness' function isn't called this ensures
             # that any corresponding booleans return True so code can be
             # run without and redshift dependent mass/flux cut applied
@@ -969,7 +1184,7 @@ class Pairs(object):
 
     # VISUALISATION FUNCTIONS
 
-    def plotOSR(self, legend=True, draw_frame=False):
+    def plotOSR(self, legend=True, draw_frame=False, pdf=False):
         Fig = plt.figure(figsize=(6,3.5))
         Ax = Fig.add_subplot(111)
 
@@ -981,9 +1196,14 @@ class Pairs(object):
         Ax.set_ylabel('OSR')
 
         plt.tight_layout()
-        plt.show()
+        if pdf is True:
+            from matplotlib.backends.backend_pdf import PdfPages
+            pdf = PdfPages('./OSRPlot.pdf')
+            pdf.savefig()
+            pdf.close()
+        # plt.show()
 
-    def plotOdds(self, legend=True, draw_frame=False):
+    def plotOdds(self, legend=True, draw_frame=False, pdf=False):
         Fig = plt.figure(figsize=(6,3.5))
         Ax = Fig.add_subplot(111)
 
@@ -996,17 +1216,22 @@ class Pairs(object):
                                 transform=Ax.transAxes)
 
         plt.tight_layout()
-        plt.show()
+        if pdf is True:
+            from matplotlib.backends.backend_pdf import PdfPages
+            pdf = PdfPages('./OddsPlot.pdf')
+            pdf.savefig()
+            pdf.close()
+        # plt.show()
 
     def plotSample(self,galaxy_indices,legend=True,draw_frame=False):
 
         Fig = plt.figure(figsize=(6,6.5))
         Ax = Fig.add_subplot(111)
 
-        Ax.plot( self.RA, self.Dec, 'ok', ms=3, alpha=0.7)
         for gal in np.array(galaxy_indices,ndmin=1):
             Ax.plot( self.RA[gal], self.Dec[gal], 'ow', mec='r', mew=2, ms=10)
 
+        Ax.plot( self.RA, self.Dec, 'ok', ms=5)
 
         Ax.set_ylabel('Dec')
         Ax.set_xlabel('RA')
@@ -1241,11 +1466,11 @@ class MockPairs(object):
         self._mass = self.catalog[mass_col].data
         
         # Ensure RA and Dec are in degrees
-        if self._RA.unit.physical_type == 'angle':
-            self._RA = self._RA.to(u.deg)
-            self._Dec = self._Dec.to(u.deg)
-
-        else:
+        try:
+            if self._RA.unit.physical_type == 'angle':
+                self._RA = self._RA.to(u.deg)
+                self._Dec = self._Dec.to(u.deg)
+        except:
             self._RA = self._RA.data * u.deg
             self._Dec = self._Dec.data * u.deg
 
@@ -1269,33 +1494,46 @@ class MockPairs(object):
         Dec_min, Dec_max = self._Dec.min(), self._Dec.max()
         dDec = Dec_max - Dec_min
         dRA = RA_max - RA_min
-    
-        if field_width:
-            if fixed:
-                self.subRA = RA_min + 0.5*dRA
-                self.subDec = Dec_min + 0.5*dDec
-            else:
-                self.subRA = (RA_min + 0.5*field_width) + (np.random.rand() * (RA_max-RA_min-field_width))
-                self.subDec = (Dec_min + 0.5*field_height) + (np.random.rand() * (Dec_max-Dec_min-field_height))
 
-            self.AreaCut = np.logical_and(np.abs(self._RA - self.subRA) < 0.5*field_width,
-                                     np.abs(self._Dec - self.subDec) < 0.5*field_height)
+
+        # CARL EDIT
+        self.RA = self._RA
+        self.Dec = self._Dec
+        self.coords = self._coords
+        self.z = self._z
+        self.mass = self._mass
+
+        # ORIGNAL CODE
+        # if field_width:
+        #     if fixed:
+        #         self.subRA = RA_min + 0.5*dRA
+        #         self.subDec = Dec_min + 0.5*dDec
+        #     else:
+        #         self.subRA = (RA_min + 0.5*field_width) + (np.random.rand() * (RA_max-RA_min-field_width))
+        #         self.subDec = (Dec_min + 0.5*field_height) + (np.random.rand() * (Dec_max-Dec_min-field_height))
+
+        #     self.AreaCut = np.logical_and(np.abs(self._RA - self.subRA) < 0.5*field_width,
+        #                              np.abs(self._Dec - self.subDec) < 0.5*field_height)
         
-            self.RA = self._RA[self.AreaCut]
-            self.Dec = self._Dec[self.AreaCut]
-            self.coords = self._coords[self.AreaCut]
-            self.z = self._z[self.AreaCut]
-            self.mass = self._mass[self.AreaCut]
-        else:
-            RAcut = np.logical_and(self._RA < (RA_max- 0.05*dRA), self._RA > (RA_min + 0.05*dRA))
-            Deccut = np.logical_and(self._Dec < (Dec_max - 0.05*dDec), self._Dec > (Dec_min + 0.05*dDec))
+        #     self.RA = self._RA[self.AreaCut]
+        #     self.Dec = self._Dec[self.AreaCut]
+        #     self.coords = self._coords[self.AreaCut]
+        #     self.z = self._z[self.AreaCut]
+        #     self.mass = self._mass[self.AreaCut]
+
+        #     print 'mass after area cut', self.mass.shape
+        # else:
+        #     RAcut = np.logical_and(self._RA < (RA_max- 0.05*dRA), self._RA > (RA_min + 0.05*dRA))
+        #     Deccut = np.logical_and(self._Dec < (Dec_max - 0.05*dDec), self._Dec > (Dec_min + 0.05*dDec))
             
-            self.AreaCut = np.logical_and(RAcut, Deccut)
-            self.RA = self._RA[self.AreaCut]
-            self.Dec = self._Dec[self.AreaCut]
-            self.coords = self._coords[self.AreaCut]
-            self.z = self._z[self.AreaCut]
-            self.mass = self._mass[self.AreaCut]           
+        #     self.AreaCut = np.logical_and(RAcut, Deccut)
+        #     self.RA = self._RA[self.AreaCut]
+        #     self.Dec = self._Dec[self.AreaCut]
+        #     self.coords = self._coords[self.AreaCut]
+        #     self.z = self._z[self.AreaCut]
+        #     self.mass = self._mass[self.AreaCut]     
+
+        #     print 'mass after area cut not width', self.mass.shape
 
     def setSeparation(self, r_min, r_max):
         """ Define the physical radius conditions of the class. Designed this way so 
@@ -1360,6 +1598,13 @@ class MockPairs(object):
         r_maxsep = (2 * np.sin(Angle(maxsep) / 2.0)).value
         r_minsep = (2 * np.sin(Angle(minsep) / 2.0)).value
         
+        print 'z_mr', z_mr.shape
+        print 'sample', sample.shape
+
+        if len(sample) == 0:
+            self.fm = 0.
+            return False 
+
         dA_exact = self.cosmo.angular_diameter_distance(z_mr[sample]).to(u.kpc)
         max_exact = (self.r_max / dA_exact) * u.rad
         min_exact = (self.r_min / dA_exact) * u.rad
@@ -1375,7 +1620,7 @@ class MockPairs(object):
         self.exact_pairs_sum = []
         # Remove both self-matches and matches below min separation
         with ProgressBar(len(sample)) as bar:
-            print('Finding initial pairs:')
+            #print('Finding initial pairs:')
             for i, primary in enumerate(sample):
                 if initial_pairs[i]:
                 # Sort so it matches brute force output
@@ -1401,12 +1646,11 @@ class MockPairs(object):
             # Delete self-matches and matches within minsep
         # Trim pairs
         self.trimmed_pairs = np.array(np.copy(self.exact_pairs),dtype='object')
-        print self.trimmed_pairs.dtype
+        #print self.trimmed_pairs.dtype
         
         Nduplicates = 0
-
         with ProgressBar(len(self.trimmed)) as bar:
-            print('Removing duplicate pairs:')
+            #print('Removing duplicate pairs:')
             for i, primary in enumerate(self.trimmed):
                 for j, secondary in enumerate(self.exact_pairs[i]):
                     if secondary in self.trimmed:
@@ -1421,27 +1665,34 @@ class MockPairs(object):
                                 self.trimmed_pairs[i] = np.delete(self.exact_pairs[i], j)
                                 #self.trimmed_pairs[i] = np.array([None])
                             except:
-                                self.trimmed_pairs = np.delete(self.trimmed_pairs, i)
-                                self.trimmed = np.delete(self.trimmed, i)
+                                #print 'trim', self.trimmed_pairs.shape, i, j
+                                try:
+                                    self.trimmed_pairs = np.delete(self.trimmed_pairs, i)
+                                    self.trimmed = np.delete(self.trimmed, i)
+                                except:
+                                    'trim fail', i, j
                         else:
                             try:
                                 k = np.where(self.trimmed == secondary)[0][0]
-                                print k
+                                #print k
                                 index = np.where(self.exact_pairs[k] == primary)[0][0]
-                                print index
+                                #print index
                                 self.trimmed_pairs[k] = np.delete(self.exact_pairs[k], index)
                             except:
                                 k = np.where(self.trimmed == secondary)[0]
-                                print k
+                                #print k
                                 self.trimmed_pairs = np.delete(self.trimmed_pairs,k)
                                 
                 bar.update()
-
-        self.Npairs = np.array([len(self.trimmed_pairs[gal]) for gal in range(len(self.trimmed))])
-        self.Npairs_total = np.sum(self.Npairs)
-        self.Ninitial = float(len(sample))
+        try:
+            self.Npairs = np.array([len(self.trimmed_pairs[gal]) for gal in range(len(self.trimmed))])
+            self.Npairs_total = np.sum(self.Npairs)
+            self.Ninitial = float(len(sample))
+            self.fm = self.Npairs_total / self.Ninitial
+        except:
+            self.fm = -99
         
-        self.fm = self.Npairs_total / self.Ninitial
+        
 
         #Ntotal = np.sum([len(trimmed_pairs[gal]) for gal in range(len(sample))])
             
