@@ -124,7 +124,7 @@ class Pairs(object):
         if SNR: # Apply additional SNR cut to full sample
             if mags: 
                 # SNR Cut in magnitudes
-                snr_mag =  2.5*np.log10(np.e)*(1/SNR)
+                snr_mag =  2.5*np.log10(np.e)*(1./SNR)
                 SNRcut = (np.abs(self.phot_catalog[band+banderr]) < snr_mag)
             else:
                 # SNR cut in fluxes
@@ -284,7 +284,7 @@ class Pairs(object):
 
                     print self.IDs[primary], primary, self.IDs[secondary], secondary
                     print np.log10(primary_mass), np.log10(secondary_mass)
-                    
+
                     print 'primary pairs before', self.trimmed_pairs[i]
                     
                     if secondary_mass > primary_mass:
@@ -493,6 +493,7 @@ class Pairs(object):
         inf_c = 0
         k_int = PPF_pairs # * self.pairWeights
         self.nan_rec = []
+        
         for i, primary in enumerate(initial):
             if PPF_pairs[i]: # Some are empty
                 for j, secondary in enumerate(trimmed_pairs[i]):
@@ -505,20 +506,12 @@ class Pairs(object):
                         if np.isfinite(temp):
                             k_sum += temp
 
-                            # Let's get their coordinates and ids
-                            if getPairCoords and (temp >= Npair_lim):
-                                # row = [self.IDs[primary], self.IDs[secondary], 
-                                #             self.RA[primary].to(u.degree).value, 
-                                #             self.Dec[primary].to(u.degree).value,
-                                #             self.RA[secondary].to(u.degree).value,
-                                #             self.Dec[secondary].to(u.degree).value,
-                                #             temp]
-                                row = [primary, secondary, temp]
-                                self.extracted.append(row)
+                            # If ordered, get the primary and secondary for later plotting/extraction
+                            if getPairCoords and (temp > Npair_lim):
+                                self.extracted.append([primary, secondary, temp])
                         else:
                             inf_c += 1
 
-                        #print temp
             # Integrate over the primary galaxies
             # Re-enforce Pz normalisation
             i_pz = self.pz[primary]
@@ -549,6 +542,7 @@ class Pairs(object):
                 cutoutsize (astropy quantity): side length of cutout
                 imghduid (int): item in the FITS HDU list corresponding to the image data
                 outprefix (str): prefix of output file name
+                z_mean (bool or float): Redshift of pair required to draw search area.
         """
 
         # Import the astropy quantities we need

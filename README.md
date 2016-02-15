@@ -47,7 +47,7 @@ p = Pairs( zgrid, pzs, mzs,
            mag_step = 0.2,
   )
 
-# Set the intended stellar mass ration, often denoted mu
+# Set the intended stellar mass ratio, often denoted mu
 p.massRatio = 4.
 # Set the physical separation requirements
 p.setSeparation( r_min = 5*u.kpc, r_max = 30*u.kpc )
