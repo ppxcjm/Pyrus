@@ -58,15 +58,27 @@ fm = p.fm
 ## Class function descriptions
 
 ### `genCutOuts()`
-Call this function after `mergerFraction()` to generate postage stamp cutouts of the identfied close pairs above some integrated pair probability.
+Call this function after `mergerFraction()` to generate postage stamp cutouts of the identfied close pairs above some integrated pair probability. This functions required the [aplpy](https://aplpy.github.io/) python plotting library.
 
 ```python
-genCutOuts( imagepath,            # path to the image used for cutouts
+genCutOuts(
+        imagepath,                # path to the image used for cutouts
         outpath = './',           # path to dir in which figures will be saved
         Npair_lim = 0.01,         # limit of integrated weighted PPF above which to select pairs
         cutoutsize = 25*u.arcsec, # side length of cutout
         imghduid = 0,             # FITS HDU index corresponding to the image data
         outprefix = 'stamp',      # prefix of output file name
         z_mean = False            # redshift of pair required to draw search area
+  )
+```
+
+### `bootstrapMergers()`
+Call this function with or in place of `mergerFraction()` to perform a bootstrap error analysis of the pair/merger fraction. Random samples from the full galaxy list are drawn `nsamples` times and the analysis performed again. The mean and standard deviation in the returned pair/merger fractions are returned.
+
+```python
+bootstrapMergers(
+        zmin,             # Lower redshift of range in which to calculate fm
+        zmax,             # Higher redshift of range in which to calculate fm
+        nsamples          # Number of bootstrap samples (100+ suggested)
   )
 ```
