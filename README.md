@@ -85,6 +85,9 @@ p.genCutOuts(
         z_mean = False            # redshift of pair required to draw search area
   )
 ```
+Doing so will output single PDF files containing images such as this for each identified close-pair system.
+
+![Alt](http://imgur.com/PNUT1Jr "Example pair cutout plot")
 
 ### `bootstrapMergers()`
 Call this function with or in place of `mergerFraction()` to perform a bootstrap error analysis of the pair/merger fraction. Random samples from the full galaxy list are drawn `nsamples` times and the analysis performed again. The mean and standard deviation in the returned pair/merger fractions are returned.
