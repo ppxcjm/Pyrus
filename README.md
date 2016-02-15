@@ -61,18 +61,12 @@ fm = p.fm
 Call this function after `mergerFraction()` to generate postage stamp cutouts of the identfied close pairs above some integrated pair probability.
 
 ```python
-def genCutOuts(self, imagepath, outpath = './', Npair_lim = 0.01, cutoutsize = 25*u.arcsec,
-                imghduid = 0, outprefix = 'stamp', z_mean = False):
-    """ Generate cutouts of potential pairs based on a cut in the integral of 
-        the weighted PPF.
-
-        Args:
-            imagepath (str): path to the image used for cutouts.
-            outpath (str): path to directory in which figures will be saved.
-            Npair_lim (float): limit of integrated PPF above which to select mergers.
-            cutoutsize (astropy quantity): side length of cutout
-            imghduid (int): item in the FITS HDU list corresponding to the image data
-            outprefix (str): prefix of output file name
-            z_mean (bool or float): Redshift of pair required to draw search area.
-    """
+genCutOuts( imagepath,            # path to the image used for cutouts
+        outpath = './',           # path to dir in which figures will be saved
+        Npair_lim = 0.01,         # limit of integrated weighted PPF above which to select pairs
+        cutoutsize = 25*u.arcsec, # side length of cutout
+        imghduid = 0,             # FITS HDU index corresponding to the image data
+        outprefix = 'stamp',      # prefix of output file name
+        z_mean = False            # redshift of pair required to draw search area
+  )
 ```
