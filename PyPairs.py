@@ -15,7 +15,22 @@ from scipy.interpolate import interp1d
 from scipy.interpolate import griddata
 from scipy.constants import golden
 # Photutils
+import photutils.aperture_core
+photutils.aperture_core.skycoord_to_pixel_mode = 'wcs'
 from photutils import SkyCircularAnnulus, CircularAnnulus, aperture_photometry
+
+#skycoord_to_pixel_mode = 'wcs'
+
+def get_ipynb():
+    try:
+        cfg = get_ipython().config
+        if 'IPKernelApp' in cfg.keys():
+            return True
+        else:
+            return False
+    except NameError:
+        return False
+
 
 class Pairs(object):
     """ Main class for photometric pair-count analysis
@@ -282,30 +297,30 @@ class Pairs(object):
                     primary_mass = self.mz[primary, self.peakz_arg[primary]]
                     secondary_mass = self.mz[secondary, self.peakz_arg[secondary]]
 
-                    print self.IDs[primary], primary, self.IDs[secondary], secondary
-                    print np.log10(primary_mass), np.log10(secondary_mass)
+                    #print self.IDs[primary], primary, self.IDs[secondary], secondary
+                    #print np.log10(primary_mass), np.log10(secondary_mass)
 
-                    print 'primary pairs before', self.trimmed_pairs[i]
+                    #print 'primary pairs before', self.trimmed_pairs[i]
                     
                     if secondary_mass > primary_mass:
-                        print 'secondary > primary'
+                        #print 'secondary > primary'
                         self.trimmed_pairs[i] = np.delete(self.initial_pairs[i], j)
                     else:
-                        print 'primary > secondary'
+                        #print 'primary > secondary'
 
                         k = np.where(self.initial == secondary)[0][0]
 
-                        print 'secondary pairs before', self.trimmed_pairs[k]
+                        #print 'secondary pairs before', self.trimmed_pairs[k]
 
                         index = np.where(self.initial_pairs[k] == primary)[0][0]
                         self.trimmed_pairs[k] = np.delete(self.initial_pairs[k],
                                                           index)
 
-                        print 'secondary pairs after', self.trimmed_pairs[k]
-                        print 'deleted secondary: k', k, 'index', index
+                        #print 'secondary pairs after', self.trimmed_pairs[k]
+                        #print 'deleted secondary: k', k, 'index', index
 
-                    print 'primary pairs after', self.trimmed_pairs[i]
-                print 
+                    # print 'primary pairs after', self.trimmed_pairs[i]
+                #print 
 
         Ntotal = np.sum([len(self.trimmed_pairs[gal]) for gal in range(len(self.initial))])
             
@@ -332,7 +347,7 @@ class Pairs(object):
         sec_weights = []
         
         print('Calculating Mask values:')
-        with ProgressBar(len(self.initial)) as bar:
+        with ProgressBar(len(self.initial), ipython_widget=get_ipynb()) as bar:
             for i, primary in enumerate( self.initial ):
                 # Calculate Primary and Secondary galaxy weights
                 pri = self.OSRweights(self.OSRmags[primary])
@@ -412,6 +427,8 @@ class Pairs(object):
         self.OSRweights_primary = np.array(pri_weights)
         self.OSRweights_secondary = np.array(sec_weights)
         self.massRatio = mass_ratio
+        self._minmass = min_mass
+        self._maxmass = max_mass
         # Calc the PPF
         self.calcPPF()
 
@@ -438,7 +455,7 @@ class Pairs(object):
         self.PPF_pairs = np.array( PPF_pairs )
         self._PPF_total = np.array( PPF_total )
 
-    def mergerFraction(self, zmin, zmax, getPairCoords=False, Npair_lim = 0.01):
+    def mergerFraction(self, zmin, zmax, getPairCoords=False, Npair_lim=0.01):
         """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
             
             Args:
@@ -450,18 +467,18 @@ class Pairs(object):
                                    self.selectionMasks, self.PPF_pairs, 
                                    self.OSRweights_primary,
                                    self.OSRweights_secondary, self.areaWeights,
-                                   self.fluxWeights,
+                                   self.priFluxWeights, self.secFluxWeights,
                                    getPairCoords, Npair_lim) # Add pair weights when done
         self.fm = fm
         self._k_sum = k_sum
         self._i_sum = i_sum
         self._zrange = [zmin, zmax]
-
         return self.fm
 
+ 
     def mergerIntegrator(self, zmin, zmax, initial, trimmed_pairs,
                          selectionMasks, PPF_pairs, OSR_primary,
-                         OSR_secondary, areaWeight, fluxWeight,
+                         OSR_secondary, areaWeight, prifluxWeight, secfluxWeight,
                          getPairCoords=False, Npair_lim=0.01):
         """ Function to integrate the total merger fraction.
         
@@ -481,24 +498,23 @@ class Pairs(object):
                 #Pair weights (when calculated)
 
         """
-
         self.extracted = []
-
+        
         # Redshift mask we want to examine
         zmask = np.logical_and(self.zr >= zmin, self.zr <= zmax)
 
         # Integrate over pairs
         k_sum = 0.
         i_sum = 0.
-        inf_c = 0
         k_int = PPF_pairs # * self.pairWeights
+        inf_c = 0
         self.nan_rec = []
         
         for i, primary in enumerate(initial):
             if PPF_pairs[i]: # Some are empty
                 for j, secondary in enumerate(trimmed_pairs[i]):
-                    temp = simps(k_int[i][j][zmask] * areaWeight[i][zmask] * fluxWeight[i][zmask],
-                                 self.zr[zmask])
+                    to_int = (k_int[i][j] * areaWeight[i] * prifluxWeight * secfluxWeight[i])
+                    temp = simps(to_int[zmask], self.zr[zmask])
                     temp *= OSR_secondary[i][j]
                     if np.isnan(temp):
                         self.nan_rec.append([i, j])
@@ -511,24 +527,27 @@ class Pairs(object):
                                 self.extracted.append([primary, secondary, temp])
                         else:
                             inf_c += 1
-
+                        #print temp
             # Integrate over the primary galaxies
             # Re-enforce Pz normalisation
             i_pz = self.pz[primary]
             if self._forcePzNorm:
                 i_pz /= simps(self.pz[primary], self.zr)
-            i_int = i_pz * selectionMasks[i] * OSR_primary[i]
-            i_sum += simps( i_int[zmask], self.zr[zmask])
 
-        # print 'inf_c', inf_c
+            i_int = i_pz * selectionMasks[i] * prifluxWeight * OSR_primary[i]
+            i_sum += simps( i_int[zmask], self.zr[zmask])
 
         # Set extracted to an array
         self.extracted = np.array(self.extracted)
 
         # Set the merger fraction
         mask = np.isfinite(k_sum)*np.isfinite(i_sum)
-        fm = k_sum[mask] / i_sum[mask]
+        if mask:
+            fm = k_sum / i_sum
+        else:
+            fm = 0.
         return fm, k_sum, i_sum
+
 
     def genCutOuts(self, imagepath, outpath = './', Npair_lim = 0.01, cutoutsize = 25*u.arcsec,
                     imghduid = 0, outprefix = 'stamp', z_mean = False):
@@ -667,6 +686,81 @@ class Pairs(object):
             os.remove(outname+'.fits')
 
         return True
+
+    def meanWeights(self, zmin, zmax):
+        """ Calculate the merger fraction as in Eq. 22 (Lopez-Sanjuan et al. 2014)
+            
+            Args:
+                zmin (float):   minimum redshift to calculate f_m
+                zmax (float):   maximum redshift to calculate f_m
+
+        """
+        aw, pri_fw, sec_fw = self.weightIntegrator(zmin, zmax, self.initial, self.trimmed_pairs,
+                                                 self.selectionMasks, self.PPF_pairs, 
+                                                 self.OSRweights_primary,
+                                                 self.OSRweights_secondary, self.areaWeights,
+                                                 self.priFluxWeights, self.secFluxWeights) # Add pair weights when done
+        self.mean_aweight = aw
+        self.mean_pri_fw = pri_fw
+        self.mean_sec_fw = sec_fw
+        self._zrange = [zmin, zmax]
+
+    def weightIntegrator(self, zmin, zmax, initial, trimmed_pairs,
+                         selectionMasks, PPF_pairs, OSR_primary,
+                         OSR_secondary, areaWeight, prifluxWeight, secfluxWeight):
+        """ Function to integrate the total merger fraction.
+        
+            Generalised to receive any set of inputs rather than stored
+            values so that both true value and error estimates can be 
+            calculated through resampling methods, e.g. bootstrap
+            (implemented below) or jackknife (yet to implement)
+
+            Args:
+                zmin (float):   minimum redshift to calculate f_m
+                zmax (float):   maximum redshift to calculate f_m
+
+                initial
+                trimmed_pairs
+                selectionMasks
+                PPF_pairs
+                #Pair weights (when calculated)
+
+        """
+
+        # Redshift mask we want to examine
+        zmask = np.logical_and(self.zr >= zmin, self.zr <= zmax)
+
+        # Integrate over pairs
+        area_weights = []
+        priFlx_weights = []
+        secFlx_weights = []
+        k_int = PPF_pairs # * self.pairWeights
+
+        for i, primary in enumerate(initial):
+            if PPF_pairs[i]: # Some are empty
+                areaWz = np.zeros(len(trimmed_pairs[i]))
+                priFlz = np.zeros(len(trimmed_pairs[i]))
+                secFlz = np.zeros(len(trimmed_pairs[i]))
+                for j, secondary in enumerate(trimmed_pairs[i]):
+                    to_int = (k_int[i][j] * areaWeight[i] * prifluxWeight * secfluxWeight[i])
+
+                    areaWz[j] = simps(k_int[i][j][zmask] * areaWeight[i][zmask], self.zr[zmask])
+                    priFlz[j] = simps(k_int[i][j][zmask] * prifluxWeight[zmask], self.zr[zmask])
+                    secFlz[j] = simps(k_int[i][j][zmask] * secfluxWeight[i][zmask], self.zr[zmask])
+
+                    bottom = simps(k_int[i][j][zmask], self.zr[zmask])
+                    areaWz[j] /= bottom
+                    priFlz[j] /= bottom
+                    secFlz[j] /= bottom
+                    
+                if not np.isnan(np.nanmean(areaWz)):
+                    area_weights.append(np.nanmean(areaWz))
+                if not np.isnan(np.nanmean(priFlz)):
+                    priFlx_weights.append(np.nanmean(priFlz))
+                if not np.isnan(np.nanmean(secFlz)):
+                    secFlx_weights.append(np.nanmean(secFlz))
+                        #print temp
+        return np.array(area_weights), np.array(priFlx_weights), np.array(secFlx_weights)
         
     def calcOdds(self, band, K=0.1, dz=0.01, OSRlim=0.3, mags=True, abzp=False,
                  mag_min = 15, mag_max = 30.5, mag_step = 0.25):
@@ -788,7 +882,8 @@ class Pairs(object):
             OSR_primary = np.array([self.OSRweights_primary[gal] for gal in newsample])
             OSR_secondary = np.array([self.OSRweights_secondary[gal] for gal in newsample])
             area_weights = np.array([self.areaWeights[gal] for gal in newsample])
-            flux_weights = np.array([self.fluxWeights[gal] for gal in newsample])
+            sec_flux_weights = np.array([self.secFluxWeights[gal] for gal in newsample])
+            pri_flux_weight = np.array(self.priFluxWeights)
             
             # Calculate fm for sample
             fm_newsample, k_ns, i_ns  = self.mergerIntegrator(zmin, zmax, initial, 
@@ -797,7 +892,8 @@ class Pairs(object):
                                                               PPF_pairs, OSR_primary, 
                                                               OSR_secondary,
                                                               area_weights,
-                                                              flux_weights)
+                                                              pri_flux_weight,
+                                                              sec_flux_weights)
             fm_array.append(fm_newsample)
             k_array.append(k_ns)
             i_array.append(i_ns)
@@ -884,12 +980,12 @@ class Pairs(object):
                                             r_out=rmax.to(u.arcsec))
         # Perform sum
 
-        photo_table = aperture_photometry(image, apertures, method='center',) # Added unit
+        photo_table = aperture_photometry(image, apertures, method='center') # Added unit
         photo_table = photo_table['aperture_sum']
 
         del image
 
-        photo_table2 = aperture_photometry(image_norm, norm_ap, method='center',) # Added unit
+        photo_table2 = aperture_photometry(image_norm, norm_ap, method='center') # Added unit
         photo_table2 = photo_table2['aperture_sum']
 
         del image_norm
@@ -928,9 +1024,12 @@ class Pairs(object):
 
             for zz in zr:
                 # print zz
-                theta_z_min = (self.r_min.to(u.kpc) / self.cosmo.angular_diameter_distance(zz).to(u.kpc))*u.rad
-                theta_z_max = (self.r_max.to(u.kpc) / self.cosmo.angular_diameter_distance(zz).to(u.kpc))*u.rad
-                area = self._calcArea(self.initial, rmin=theta_z_min.to(u.arcsec), rmax=theta_z_max.to(u.arcsec),
+                theta_z_min = (self.r_min.to(u.kpc) / 
+                               self.cosmo.angular_diameter_distance(zz).to(u.kpc))*u.rad
+                theta_z_max = (self.r_max.to(u.kpc) / 
+                               self.cosmo.angular_diameter_distance(zz).to(u.kpc))*u.rad
+                area = self._calcArea(self.initial, rmin=theta_z_min.to(u.arcsec), 
+                                      rmax=theta_z_max.to(u.arcsec),
                                       ps=ps*u.arcsec/u.pixel, maskdata = maskdata, normdata = norm)
  
                 weights.append(area)
@@ -953,35 +1052,51 @@ class Pairs(object):
         """
         if schecter == 'single':
             mf_fn = self.SchecterMass
-        # else: - Add in Double Schecter/Double power-law etc. as needed
+        elif schecter.lower() == 'double':
+            mf_fn = self.DoubleSchecterMass
 
 
         # What mass function bin does each z in self.zr correspond to?
         bin_indices = np.ones_like(self.zr, dtype='int')*-99
         for i, z in enumerate(self.zr):
-            binarg = np.argmin(np.abs(mf_z[:-1] - z))
+            binarg = np.argmin(np.abs(mf_z - z))
             bin_indices[i] = int(binarg)
-
 
         # If it equals -99, assign a weight of 1 later on.
         if (bin_indices == -99.).any():
             print 'WARNING - mass function redshift bins do not match self.zr. Please check.'
 
         # log stellar mass array to act as integration x-axis
-        mass_z = np.logspace(7.,13.,100) 
+        mass_z = np.logspace(7.,self._maxmass,1000) 
 
         # test brute force way
-        primaryFluxInts = []
+        primary_z = []
+        m_lim = np.maximum(10**self._minmass, self._massCompleteness(self.zr))
+        for zi, z in enumerate(self.zr):    
+            if (self._massCompleteness(self.zr)[zi] > 10**self._maxmass):
+                primary_z.append(0.)
+            else:
+                mask_1 = np.array(mass_z >= m_lim[zi])
+                mask_2 = np.array(np.log10(mass_z) >= self._minmass)
+                mf_y = mf_fn(np.log10(mass_z[mask_1]), *mf_params[bin_indices[zi]])
+                top = simps(mf_y, np.log10(mass_z[mask_1]))
+
+                mf_y = mf_fn(np.log10(mass_z[mask_2]), *mf_params[bin_indices[zi]])
+                bottom = simps(mf_y, np.log10(mass_z[mask_2]))
+            primary_z.append(top/bottom)
+        primaryFluxInts = np.array(primary_z)
+        #print 'Primary weights done'
         
-        with ProgressBar(len(self.initial)) as bar:
+        self.secondaryFluxInts = []        
+        with ProgressBar(len(self.initial), ipython_widget=get_ipynb()) as bar:
             for i, primary in enumerate(self.initial):
                 # Get the limiting stellar mass at every z
                 m_lim = np.maximum((self.mz[primary,:]/self.massRatio), self._massCompleteness(self.zr))
 
-                primary_z = []
+                secondary_z = np.ones_like(self.zr)
                 for zi, z in enumerate(self.zr):
                     # For each redshift, perform the integral
-                    if ((self.mz[primary,zi]/self.massRatio) >= self._massCompleteness(self.zr)[zi]):
+                    if (self.mz[primary,zi]/self.massRatio) >= self._massCompleteness(self.zr)[zi]:
                         primary_z.append(1.)
                     else:
                         mask_1 = np.logical_and(mass_z >= m_lim[zi], mass_z <= self.mz[primary,zi])
@@ -993,29 +1108,40 @@ class Pairs(object):
                             top = simps(mf_y, np.log10(mass_z[mask_1]))
                         
                             if top == 0.: # for debugging
-                                print i, primary, 'top'
+                                #print i, primary, 'top'
+                                tmp = 1
                             mf_y = mf_fn(np.log10(mass_z[mask_2]), *mf_params[bin_indices[zi]])
                             bottom = simps(mf_y, np.log10(mass_z[mask_2]))
                         
                             if bottom == 0.: # for debugging
-                                print i, primary, 'bottom'
+                                #print i, primary, 'bottom'
+                                tmp = 1
                             ratio = top / bottom
                             #print z, 1./ratio
                         else:
                             ratio = 1.
 
-                        primary_z.append(ratio)
-
-                primaryFluxInts.append(primary_z)
+                        secondary_z[zi] = ratio
+                        
+                self.secondaryFluxInts.append(secondary_z)
                 bar.update()
-
-        weights = np.clip(1. / np.array(primaryFluxInts),0,10)
-        weights[np.isnan(weights)] = 0.
-        self.fluxWeights = weights
+        
+        self.secondaryFluxInts = np.array(self.secondaryFluxInts)
+        sec_weights = np.clip(np.power(self.secondaryFluxInts,-1), 0, 10)
+        pri_weights = np.clip(primaryFluxInts, 0, 1)
+        sec_weights[np.isnan(sec_weights)] = 0.
+        pri_weights[np.isnan(pri_weights)] = 0.
+        self.secFluxWeights = sec_weights
+        self.priFluxWeights = pri_weights
 
     def SchecterMass(self,mass_array, Mchar, alpha, phi_star):
         phi_m = np.log(10)*phi_star*(10**((mass_array - Mchar)*(1 + alpha)) * 
                                      np.exp(-10**(mass_array - Mchar)))
+        return phi_m
+
+    def DoubleSchecterMass(self, mass_array, Mchar, alpha1, phi1, alpha2, phi2):
+        phi_m = self.SchecterMass(mass_array, Mchar, alpha1, phi1) + \
+                            self.SchecterMass(mass_array, Mchar, alpha2, phi2)
         return phi_m
 
     def setMassCompleteness(self, redshift, magnitude, magLim, mags=True):
@@ -1613,9 +1739,10 @@ class MockPairs(object):
         self.exact_pairs = []
         self.exact_pairs_sum = []
         # Remove both self-matches and matches below min separation
-        with ProgressBar(len(sample)) as bar:
-            #print('Finding initial pairs:')
+        print('Finding initial pairs:')
+        with ProgressBar(len(sample), ipython_widget=get_ipynb()) as bar:
             for i, primary in enumerate(sample):
+                bar.update()
                 if initial_pairs[i]:
                 # Sort so it matches brute force output
                     initial_pairs[i] = np.sort(initial_pairs[i])
@@ -1623,7 +1750,7 @@ class MockPairs(object):
                     z_sep = np.abs(z_mr[primary] - z_mr[initial_pairs[i]]) / (1 + z_mr[primary])
                     r_sep = coords[primary].separation(coords[initial_pairs[i]]).to(u.rad).value
                     pair = np.logical_and(r_sep >= min_exact[i].value,r_sep <= max_exact[i].value)
-                    pair *= np.logical_and(z_sep < 0.0017, 
+                    pair *= np.logical_and(z_sep < z_tol, 
                                            np.abs(masses[primary] - masses[initial_pairs[i]]) < np.log10(ratio))
 
                     # if sum(pair) > 0:
@@ -1636,17 +1763,16 @@ class MockPairs(object):
                         self.exact_pairs.append(initial_pairs[i][pair])
                         self.exact_pairs_sum.append(len(initial_pairs[i][pair]))
                         self.trimmed.append(primary)
-                bar.update()
+                
             # Delete self-matches and matches within minsep
         # Trim pairs
+
         self.trimmed_pairs = np.array(np.copy(self.exact_pairs),dtype='object')
-        #print self.trimmed_pairs.dtype
         
         Nduplicates = 0
-        with ProgressBar(len(self.trimmed)) as bar:
-            #print('Removing duplicate pairs:')
+        with ProgressBar(len(self.trimmed), ipython_widget=get_ipynb()) as bar:
             for i, primary in enumerate(self.trimmed):
-                for j, secondary in enumerate(self.exact_pairs[i]):
+                for j, secondary in enumerate(self.trimmed_pairs[i]):
                     if secondary in self.trimmed:
                     
                         Nduplicates += 1 # Counter to check if number seems sensible
@@ -1659,12 +1785,12 @@ class MockPairs(object):
                                 self.trimmed_pairs[i] = np.delete(self.exact_pairs[i], j)
                                 #self.trimmed_pairs[i] = np.array([None])
                             except:
-                                #print 'trim', self.trimmed_pairs.shape, i, j
-                                try:
-                                    self.trimmed_pairs = np.delete(self.trimmed_pairs, i)
-                                    self.trimmed = np.delete(self.trimmed, i)
-                                except:
-                                    'trim fail', i, j
+                                print 'needed'
+                                #k = np.where(self.trimmed_pairs == primary)[0]
+                                #self.trimmed_pairs = np.delete(self.trimmed_pairs, k)
+                                #k = np.where(self.trimmed == primary)[0][0]
+                                #self.trimmed = np.delete(self.trimmed, k)
+
                         else:
                             try:
                                 k = np.where(self.trimmed == secondary)[0][0]
@@ -1673,19 +1799,28 @@ class MockPairs(object):
                                 #print index
                                 self.trimmed_pairs[k] = np.delete(self.exact_pairs[k], index)
                             except:
-                                k = np.where(self.trimmed == secondary)[0]
-                                #print k
-                                self.trimmed_pairs = np.delete(self.trimmed_pairs,k)
+                                print 'needed'
+                                #k = np.where(self.trimmed_pairs == primary)[0]
+                                #self.trimmed_pairs = np.delete(self.trimmed_pairs,k)
                                 
                 bar.update()
-        try:
-            self.Npairs = np.array([len(self.trimmed_pairs[gal]) for gal in range(len(self.trimmed))])
-            self.Npairs_total = np.sum(self.Npairs)
-            self.Ninitial = float(len(sample))
-            self.fm = self.Npairs_total / self.Ninitial
-        except:
-            self.fm = -99
-        
+
+        """
+        Npairs = []
+        for gal in self.trimmed_pairs:
+            try:
+                Npairs.append(len(gal))
+            except TypeError:
+                # Check is int
+                if type(gal) == int:
+                    Npairs.append(1)
+        self.Npairs = np.array(Npairs)
+        """
+        self.Npairs = np.array([len(self.trimmed_pairs[gal]) for gal in range(len(self.trimmed))])
+        self.Npairs_total = np.sum(self.Npairs)
+        self.Ninitial = float(len(sample))
+        self.masses = masses
+        print('\n')
         
 
         #Ntotal = np.sum([len(trimmed_pairs[gal]) for gal in range(len(sample))])
